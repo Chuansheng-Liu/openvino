@@ -433,7 +433,9 @@ static size_t get_seq_len(cldnn::layout& layout) {
     auto shape = layout.get_shape();
     size_t seq_len = static_cast<size_t>(shape[0]);
     if (shape.size() == 4) {
-        seq_len = static_cast<size_t>(shape[0] * shape[1]);
+        // Runtime graph uses [tokens, hidden, 1, 1] for this input layout.
+        // Token count remains the first dimension.
+        seq_len = static_cast<size_t>(shape[0]);
     }
     return seq_len;
 }
