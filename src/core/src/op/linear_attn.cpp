@@ -64,6 +64,26 @@ LinearAttention::LinearAttention(const ov::OutputVector& args) : ov::op::Op(args
     constructor_validate_and_infer_types();
 }
 
+LinearAttention::LinearAttention(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable)
+    : ov::op::Op(args) {
+    m_variable = variable;
+    constructor_validate_and_infer_types();
+}
+
+bool LinearAttention::visit_attributes(ov::AttributeVisitor& visitor) {
+    OV_OP_SCOPE(LinearAttention_visit_attributes);
+
+    visitor.on_attribute("variable_id", m_variable);
+    OPENVINO_ASSERT(m_variable, "Variable is not initialized.");
+
+    auto variable_info = m_variable->get_info();
+    visitor.on_attribute("variable_type", variable_info.data_type);
+    visitor.on_attribute("variable_shape", variable_info.data_shape);
+    m_variable->update(variable_info);
+
+    return true;
+}
+
 void LinearAttention::validate_and_infer_types() {
     OV_OP_SCOPE(LinearAttention_validate_and_infer_types);
 
@@ -95,6 +115,9 @@ void LinearAttention::validate_and_infer_types() {
 }
 
 std::shared_ptr<ov::Node> LinearAttention::clone_with_new_inputs(const ov::OutputVector& new_args) const {
+    if (m_variable) {
+        return std::make_shared<LinearAttention>(new_args, m_variable);
+    }
     return std::make_shared<LinearAttention>(new_args);
 }
 

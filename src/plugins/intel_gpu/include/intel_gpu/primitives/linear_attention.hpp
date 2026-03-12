@@ -7,6 +7,7 @@
 #include "intel_gpu/graph/topology.hpp"
 #include "intel_gpu/graph/program.hpp"
 #include "openvino/op/linear_attn.hpp"
+#include "openvino/op/util/variable.hpp"
 #include <vector>
 
 namespace cldnn {
@@ -20,7 +21,7 @@ struct linear_attention : public primitive_base<linear_attention> {
 
     linear_attention() : primitive_base("", {}) {}
 
-    /// @brief Constructs linear_attention primitive / layer.
+    /// @brief Constructs linear_attention primitive / layer (no variable).
     ///
     /// @param id                 An identifier of new primitive.
     /// @param inputs             A list of Input primitive ids (inputs).
@@ -29,8 +30,26 @@ struct linear_attention : public primitive_base<linear_attention> {
         : primitive_base(id, inputs) {
     }
 
+    /// @brief Constructs linear_attention primitive / layer (variable-aware).
+    ///
+    /// @param id                 An identifier of new primitive.
+    /// @param inputs             A list of Input primitive ids (inputs).
+    /// @param variable_info      Variable info for recurrent state.
+    linear_attention(const primitive_id& id,
+            const std::vector<input_info>& inputs,
+            const ov::op::util::VariableInfo& variable_info)
+        : primitive_base(id, inputs),
+          variable_info(variable_info) {
+    }
+
+    ov::op::util::VariableInfo variable_info;
+
     size_t hash() const override {
         size_t seed = primitive::hash();
+        // Note: variable_info is intentionally excluded from hash.
+        // It does not affect kernel source code — only runtime argument binding.
+        // Including it would give each layer a unique hash, preventing kernel reuse
+        // and causing OpenCL "redefinition" errors when multiple kernels are batched.
         return seed;
     }
 
@@ -40,24 +59,22 @@ struct linear_attention : public primitive_base<linear_attention> {
 
     void save(BinaryOutputBuffer& ob) const override {
         primitive_base<linear_attention>::save(ob);
-        // ob << k_head_size;
-        // ob << v_head_size;
-        // ob << k_heads_num;
-        // ob << v_heads_num;
+        ov::element::Type_t data_type = variable_info.data_type;
+        ob << variable_info.variable_id;
+        ob << variable_info.data_shape;
+        ob << make_data(&data_type, sizeof(ov::element::Type_t));
     }
 
     void load(BinaryInputBuffer& ib) override {
         primitive_base<linear_attention>::load(ib);
-        // ib >> k_head_size;
-        // ib >> v_head_size;
-        // ib >> k_heads_num;
-        // ib >> v_heads_num;
+        ov::PartialShape data_shape;
+        ov::element::Type_t data_type = ov::element::Type_t::dynamic;
+        std::string variable_id;
+        ib >> variable_id;
+        ib >> data_shape;
+        ib >> make_data(&data_type, sizeof(ov::element::Type_t));
+        variable_info = {data_shape, data_type, variable_id};
     }
-
-    // size_t k_head_size = 0;
-    // size_t v_head_size = 0;
-    // size_t k_heads_num = 0;
-    // size_t v_heads_num = 0;
 };
 
 }  // namespace cldnn
