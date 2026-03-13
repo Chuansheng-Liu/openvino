@@ -876,6 +876,10 @@ void network::execute_impl(const std::vector<event::ptr>& events) {
     // In scenarios with a big number of very small networks it can provide performance drop.
     get_stream().flush();
 
+    // Free dead pool entries so VRAM doesn't accumulate across passes (e.g. 8K→16K seq_len growth).
+    // Within-pass recycling already happened via eager-release; 0-user entries are now safe to drop.
+    get_memory_pool().sweep_zero_user_entries(get_id());
+
     // Reset all flags for the next execution
     for (auto& inst : _exec_order) {
         inst->reset_flags();
