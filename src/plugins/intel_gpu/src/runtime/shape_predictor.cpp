@@ -159,11 +159,17 @@ std::pair<bool, ov::Shape> ShapePredictor::predict_preallocation_shape(const std
         } else if (_settings.buffers_preallocation_ratio > 1.0f) {
             if (format::is_blocked(layout.format))
                 return {false, {}};
-            // Apply percentage buffer preallocation
-            auto current_shape_size = ov::shape_size(current_shape);
-            ov::Shape new_shape_size(current_shape.size(), 1);
-            new_shape_size[0] = static_cast<size_t>(current_shape_size * _settings.buffers_preallocation_ratio);
-            return {true, new_shape_size};
+            // Apply percentage buffer preallocation along the growing dimension only,
+            // preserving multi-dimensional structure for proper buffer reuse across layers.
+            auto new_shape = current_shape;
+            const auto& prev_shape = shapes[shapes_num - 2];
+            for (size_t i = 0; i < current_shape.size(); ++i) {
+                if (current_shape[i] > prev_shape[i]) {
+                    new_shape[i] = static_cast<size_t>(current_shape[i] * _settings.buffers_preallocation_ratio);
+                    return {true, new_shape};
+                }
+            }
+            return {false, {}};
         }
     }
 

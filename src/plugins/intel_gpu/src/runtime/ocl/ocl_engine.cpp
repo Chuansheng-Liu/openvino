@@ -116,7 +116,8 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
                         "Please try to reduce batch size or use lower precision.");
     }
 
-    auto used_mem = get_used_device_memory(allocation_type::usm_device) + get_used_device_memory(allocation_type::usm_host);
+    auto used_mem = get_used_device_memory(allocation_type::usm_device) + get_used_device_memory(allocation_type::usm_host)
+                  + get_used_device_memory(allocation_type::cl_mem);
     auto exceed_available_mem_size = (layout.bytes_count() + used_mem > get_max_memory_size());
 
     // When dynamic shape upper bound makes bigger buffer, then return false.
@@ -132,11 +133,10 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
                     "Required ", layout.bytes_count(), " bytes, already occupied : ", used_mem, " bytes, ",
                     "but available memory size is ", get_max_memory_size(), " bytes");
 #else
-    if (exceed_available_mem_size) {
-        GPU_DEBUG_COUT << "[Warning] [GPU] Exceeded max size of memory allocation: " << "Required " << layout.bytes_count() << " bytes, already occupied : "
-                       << used_mem << " bytes, but available memory size is " << get_max_memory_size() << " bytes" << std::endl;
-        GPU_DEBUG_COUT << "Please note that performance might drop due to memory swap." << std::endl;
-    }
+    OPENVINO_ASSERT(!exceed_available_mem_size,
+                    "[GPU] Exceeded max size of memory allocation: ",
+                    "Required ", layout.bytes_count(), " bytes, already occupied : ", used_mem, " bytes, ",
+                    "but available memory size is ", get_max_memory_size(), " bytes");
 #endif
 
     return true;
