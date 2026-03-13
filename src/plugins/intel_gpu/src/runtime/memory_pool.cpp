@@ -68,16 +68,12 @@ void memory_pool::release_memory(memory* mem, const size_t& unique_id, primitive
                     user_it = it->second._users.erase(user_it);
                 }
                 if (it->second._users.empty()) {
-#ifdef GPU_DEBUG_CONFIG
-                    GPU_DEBUG_IF(_config.get_dump_memory_pool()) {
-                        auto released_mem_size = it->first;
-                        total_mem_size_non_padded_pool -= released_mem_size;
-                        if (type == allocation_type::usm_host)
-                            mem_size_non_padded_pool_host -= released_mem_size;
-                    }
-#endif
-                    // if this was the only user of the memory, then free it up
-                    it = _non_padded_pool.erase(it);
+                    // Keep 0-user entries in the pool for recycling.
+                    // A 0-user entry passes has_conflict({}, any_restrictions) == false,
+                    // so a future get_from_non_padded_pool() call can claim it for a new
+                    // primitive. Combined with eager release in network::execute_impl,
+                    // this lets sequential LLM layers alias a single physical buffer
+                    // instead of each holding their own copy (saves ~5 GB at 8K seq_len).
                 }
 
                 //entry found and processed - so return
@@ -105,16 +101,7 @@ void memory_pool::release_memory(memory* mem, const size_t& unique_id, primitive
                         user_it = list_itr->_users.erase(user_it);
                     }
                     if (list_itr->_users.empty()) {
-#ifdef GPU_DEBUG_CONFIG
-                        GPU_DEBUG_IF(_config.get_dump_memory_pool()) {
-                            auto released_mem_size = mem->size();
-                            total_mem_size_padded_pool -= released_mem_size;
-                            if (type == allocation_type::usm_host)
-                                mem_size_padded_pool_host -= released_mem_size;
-                        }
-#endif
-                        // if this was the only user of the memory, then free it up
-                        list.erase(list_itr);
+                        // Keep 0-user entries for recycling (see non-padded pool comment).
                     }
 
                     //entry found and processed - so return
