@@ -103,7 +103,7 @@ void recurrent_linear_attn(int b_idx,
     for (int i = 0; i < v_head_dim_per_t; i++) {
         int v_head_dim_idx = head_dim_t_idx * v_head_dim_per_t + i;
         int stride = b_idx * v_num_heads * v_head_dims * k_head_dims + head_idx * v_head_dims * k_head_dims + v_head_dim_idx * k_head_dims;
-        cm_load_by_row<float, IN_OUT_DTYPE, k_head_dims>(h0.select<k_head_dims, 1>(k_head_dims * i), initial_state, stride * sizeof(IN_OUT_DTYPE));
+        cm_load_by_row<float, float, k_head_dims>(h0.select<k_head_dims, 1>(k_head_dims * i), initial_state, stride * sizeof(float));
     }
 
     const int group_size = v_num_heads / k_num_heads;
@@ -113,9 +113,9 @@ void recurrent_linear_attn(int b_idx,
         // g B, T, H
         int stride = b_idx * seq * v_num_heads + s * v_num_heads + head_idx;
         vector<float, 1> b_beta;  // cm_load<float, 1>(beta, stride * sizeof(IN_OUT_DTYPE));
-        cm_load_by_row<float, IN_OUT_DTYPE, 1>(b_beta, beta, stride * sizeof(IN_OUT_DTYPE));
-        vector<float, 1> b_g;  // cm_load<float, 1>(g, stride * sizeof(IN_OUT_DTYPE));
-        cm_load_by_row<float, IN_OUT_DTYPE, 1>(b_g, g, stride * sizeof(IN_OUT_DTYPE));
+        cm_load_by_row<float, float, 1>(b_beta, beta, stride * sizeof(float));
+        vector<float, 1> b_g;  // cm_load<float, 1>(g, stride * sizeof(float));
+        cm_load_by_row<float, float, 1>(b_g, g, stride * sizeof(float));
         // if (head_dim_t_idx == 0) {
         //     printf("b_idx %d head_idx %d head_dim_t_idx %d beta_cur %f b_g %f\n",
         //            b_idx,
@@ -220,7 +220,7 @@ void recurrent_linear_attn(int b_idx,
     for (int i = 0; i < v_head_dim_per_t; i++) {
         int v_head_dim_idx = head_dim_t_idx * v_head_dim_per_t + i;
         int stride = b_idx * v_num_heads * v_head_dims * k_head_dims + head_idx * v_head_dims * k_head_dims + v_head_dim_idx * k_head_dims;
-        cm_store_by_row<IN_OUT_DTYPE, float, k_head_dims>(output_state, h0.select<k_head_dims, 1>(k_head_dims * i), stride * sizeof(IN_OUT_DTYPE));
+        cm_store_by_row<float, float, k_head_dims>(output_state, h0.select<k_head_dims, 1>(k_head_dims * i), stride * sizeof(float));
         // if constexpr (k_head_dims == 128) {
         //     cm_store<float, 64>(initial_state, stride * 4, h0.select<64, 1>(k_head_dims * i));
         //     cm_store<float, 64>(initial_state, stride * 4 + 4 * 64, h0.select<64, 1>(k_head_dims * i + 64));
