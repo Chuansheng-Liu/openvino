@@ -39,6 +39,7 @@
 #include "broadcast_inst.h"
 #include "dynamic_quantize_inst.h"
 #include "swiglu_inst.h"
+#include "moe_3gemm_fused_inst.h"
 #include "experimental_detectron_roi_feature_extractor_inst.hpp"
 #include "lora_inst.h"
 #include "registry/implementation_manager.hpp"
@@ -2412,6 +2413,21 @@ memory::ptr primitive_inst::allocate_internal_buffer(const layout& layout, size_
     }
     GPU_DEBUG_LOG << "=> allocate to " << alloc_type << std::endl;
 
+    // For moe_3gemm_fused_compressed, use self-only memory restrictions so that
+    // all 94 MoE expert layers can share the same two scratch buffers
+    // (expert_mask_batch + topk index buffers).  With the full
+    // _runtime_memory_dependencies, each layer needs its own scratch allocation,
+    // causing OOM at 32K+ context (94 × 2 × ~256 MB ≈ 48 GB).
+    // Self-only restrictions mean: only block reuse if the *same* primitive is a
+    // current user — which is never true when a fresh scratch is requested.
+    std::unordered_set<uint32_t> self_id_set;
+    memory_restricter<uint32_t> self_only_restr(&self_id_set);
+    const memory_restricter<uint32_t>* active_restr = &_runtime_memory_dependencies;
+    if (get_node().is_type<moe_3gemm_fused_compressed>()) {
+        self_id_set.insert(static_cast<uint32_t>(get_node().get_unique_id()));
+        active_restr = &self_only_restr;
+    }
+
     auto ret_mem =
         get_memory_from_pool(get_network().get_engine(),
                              get_network_id(),
@@ -2420,7 +2436,7 @@ memory::ptr primitive_inst::allocate_internal_buffer(const layout& layout, size_
                              layout,
                              alloc_type,
                              can_share_internal_buffer(),
-                             _runtime_memory_dependencies,
+                             *active_restr,
                              reset,
                              _intermediates_memory.size() > idx ? _intermediates_memory[idx].get() : nullptr);
     GPU_DEBUG_LOG << " [" << get_network().get_id() << ":" << get_node().id() << ": internal buf " << idx << "] " << alloc_type
