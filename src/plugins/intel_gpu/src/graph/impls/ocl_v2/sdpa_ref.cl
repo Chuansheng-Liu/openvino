@@ -4,6 +4,10 @@
 
 #include "include/batch_headers/fetch_data.cl"
 
+#if IS_CAUSAL
+#define CAUSAL_KV_OFFSET ((int)(SOURCE_SEQ_LEN) - (int)(TARGET_SEQ_LEN))
+#endif
+
 // query_input   [batch, heads_num, q_len, head_size]
 // key_input     [batch, kv_heads_num, kv_len, head_size]
 // value_input   [batch, kv_heads_num, kv_len, head_size]
@@ -238,7 +242,7 @@ KERNEL(sdpa_ref)(
                                   b1 * (TARGET_SEQ_LEN * SOURCE_SEQ_LEN) +
                                   target_seq_idx * (SOURCE_SEQ_LEN) + s;
 #if IS_CAUSAL
-            OUTPUT_TYPE attn_mask_val = s > target_seq_idx ? OUTPUT_VAL_MIN : 0;
+            OUTPUT_TYPE attn_mask_val = s > target_seq_idx + CAUSAL_KV_OFFSET ? OUTPUT_VAL_MIN : 0;
 #elif !IS_CAUSAL && HAS_ATTN_MASK_INPUT
             uint attn_mask_offset = INPUT3_GET_INDEX_SAFE(b0, b1, target_seq_idx, s);
             OUTPUT_TYPE attn_mask_val = attn_mask[attn_mask_offset];
