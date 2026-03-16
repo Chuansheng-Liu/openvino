@@ -599,7 +599,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         // the "input -> reshape" subgraph is constant-folded in the above "CommonOptimizations"
         // To handle this case, "KeepConstPrecision" is executed again.
         manager.register_pass<ov::pass::KeepConstPrecision>(supported_woq_types, !device_info.supports_immad);
-        manager.register_pass<ov::pass::PrintModel>("before_la_fusion.cpp");
+        // manager.register_pass<ov::pass::PrintModel>("before_la_fusion.cpp");
         manager.register_pass<ov::pass::LinearAttentionFusion>();
 
         {
