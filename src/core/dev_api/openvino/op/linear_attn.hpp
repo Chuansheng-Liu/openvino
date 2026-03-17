@@ -4,6 +4,7 @@
 #pragma once
 
 #include "openvino/op/op.hpp"
+#include "openvino/op/util/variable.hpp"
 
 namespace ov {
 namespace op {
@@ -17,13 +18,17 @@ public:
     LinearAttention() = default;
 
     LinearAttention(const ov::OutputVector& args);
+    LinearAttention(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable);
     void validate_and_infer_types() override;
     std::shared_ptr<ov::Node> clone_with_new_inputs(const ov::OutputVector& new_args) const override;
 
     void set_out_type(int index, const ov::element::Type& output_type);
 
+    std::shared_ptr<ov::op::util::Variable> get_variable() const { return m_variable; }
+
 protected:
     std::vector<ov::element::Type> m_output_type = {ov::element::dynamic, ov::element::dynamic, ov::element::dynamic};
+    std::shared_ptr<ov::op::util::Variable> m_variable;
 };
 
 }  // namespace op

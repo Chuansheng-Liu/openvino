@@ -64,6 +64,11 @@ LinearAttention::LinearAttention(const ov::OutputVector& args) : ov::op::Op(args
     constructor_validate_and_infer_types();
 }
 
+LinearAttention::LinearAttention(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable)
+    : ov::op::Op(args), m_variable(variable) {
+    constructor_validate_and_infer_types();
+}
+
 void LinearAttention::validate_and_infer_types() {
     OV_OP_SCOPE(LinearAttention_validate_and_infer_types);
 
@@ -95,6 +100,9 @@ void LinearAttention::validate_and_infer_types() {
 }
 
 std::shared_ptr<ov::Node> LinearAttention::clone_with_new_inputs(const ov::OutputVector& new_args) const {
+    check_new_args_count(this, new_args);
+    if (m_variable)
+        return std::make_shared<LinearAttention>(new_args, m_variable);
     return std::make_shared<LinearAttention>(new_args);
 }
 
