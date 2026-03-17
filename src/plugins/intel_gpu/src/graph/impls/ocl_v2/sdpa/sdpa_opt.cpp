@@ -185,12 +185,6 @@ bool SDPAOpt::supports_micro_sdpa(const RuntimeParams& params) {
     const auto& v_layout = params.get_input_layout(2);
     auto desc = params.typed_desc<scaled_dot_product_attention>();
 
-    // The micro SDPA kernel's IS_CAUSAL path does not account for the
-    // KV-cache offset (SOURCE_SEQ_LEN - TARGET_SEQ_LEN).  Until the
-    // micro kernel is updated, fall back to sdpa_opt for causal SDPA.
-    if (desc->is_causal) {
-        return false;
-    }
 
     // Will check it later to decide whether support micro kernel
     // if (desc->indirect_axis != -1) {
