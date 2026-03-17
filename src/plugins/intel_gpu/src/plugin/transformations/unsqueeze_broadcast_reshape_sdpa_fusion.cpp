@@ -39,18 +39,24 @@ UnsqueezeBroadcastReshapeSDPAFusion::UnsqueezeBroadcastReshapeSDPAFusion() {
     auto input_scale_m = any_input();
     auto input_b_kvcache_m = wrap_type<ov::intel_gpu::op::KVCache>({any_input(), any_input()});
     auto input_b_rope_m = wrap_type<ov::op::internal::RoPE>({any_input(), any_input(), any_input()});
+    auto input_b_any_m = any_input();
     auto input_c_kvcache_m = wrap_type<ov::intel_gpu::op::KVCache>({any_input(), any_input()});
     auto input_c_transpose_m = wrap_type<ov::op::v1::Transpose>({any_input(), any_input()});
+    auto input_c_any_m = any_input();
 
     auto axes_const_b_m = wrap_type<ov::op::v0::Constant>();
+    auto axes_const_b2_m = wrap_type<ov::op::v0::Constant>();
     auto axes_const_c_m = wrap_type<ov::op::v0::Constant>();
+    auto axes_const_c2_m = wrap_type<ov::op::v0::Constant>();
     auto unsqueeze_b_m = wrap_type<ov::op::v0::Unsqueeze>({input_b_kvcache_m, axes_const_b_m}, unsqueeze_predicate);
+    auto unsqueeze_b_any_m = wrap_type<ov::op::v0::Unsqueeze>({input_b_any_m, axes_const_b2_m}, unsqueeze_predicate);
     auto unsqueeze_c_m = wrap_type<ov::op::v0::Unsqueeze>({input_c_kvcache_m, axes_const_c_m}, unsqueeze_predicate);
+    auto unsqueeze_c_any_m = wrap_type<ov::op::v0::Unsqueeze>({input_c_any_m, axes_const_c2_m}, unsqueeze_predicate);
     auto pre_reshape_b_m = wrap_type<ov::op::v1::Reshape>({input_b_rope_m, any_input()}, unsqueeze_predicate);
     auto pre_reshape_c_m = wrap_type<ov::op::v1::Reshape>({input_c_transpose_m, any_input()}, unsqueeze_predicate);
 
-    auto broadcast_input_b_m = std::make_shared<ov::pass::pattern::op::Or>(OutputVector{unsqueeze_b_m, pre_reshape_b_m});
-    auto broadcast_input_c_m = std::make_shared<ov::pass::pattern::op::Or>(OutputVector{unsqueeze_c_m, pre_reshape_c_m});
+    auto broadcast_input_b_m = std::make_shared<ov::pass::pattern::op::Or>(OutputVector{unsqueeze_b_m, unsqueeze_b_any_m, pre_reshape_b_m});
+    auto broadcast_input_c_m = std::make_shared<ov::pass::pattern::op::Or>(OutputVector{unsqueeze_c_m, unsqueeze_c_any_m, pre_reshape_c_m});
     auto broadcast_b_m = wrap_type<ov::op::v3::Broadcast>({broadcast_input_b_m, any_input()}, broadcast_predicate);
     auto broadcast_c_m = wrap_type<ov::op::v3::Broadcast>({broadcast_input_c_m, any_input()}, broadcast_predicate);
     auto reshape_b_m = wrap_type<ov::op::v1::Reshape>({broadcast_b_m, any_input()}, reshape_predicate);
@@ -134,12 +140,16 @@ UnsqueezeBroadcastReshapeSDPAFusion::UnsqueezeBroadcastReshapeSDPAFusion() {
         data_inputs.push_back(pattern_map.at(input_a_m).get_node_shared_ptr());               // Q input
         if (pattern_map.find(input_b_kvcache_m) != pattern_map.end())
             data_inputs.push_back(pattern_map.at(input_b_kvcache_m).get_node_shared_ptr());   // K input from KVCache
-        if (pattern_map.find(input_b_rope_m) != pattern_map.end())
+        else if (pattern_map.find(input_b_rope_m) != pattern_map.end())
             data_inputs.push_back(pattern_map.at(input_b_rope_m).get_node_shared_ptr());      // K input from RoPE
+        else if (pattern_map.find(input_b_any_m) != pattern_map.end())
+            data_inputs.push_back(pattern_map.at(input_b_any_m).get_node_shared_ptr());       // K input from Concat or other
         if (pattern_map.find(input_c_kvcache_m) != pattern_map.end())
             data_inputs.push_back(pattern_map.at(input_c_kvcache_m).get_node_shared_ptr());   // V input from KVCache
-        if (pattern_map.find(input_c_transpose_m) != pattern_map.end())
+        else if (pattern_map.find(input_c_transpose_m) != pattern_map.end())
             data_inputs.push_back(pattern_map.at(input_c_transpose_m).get_node_shared_ptr()); // V input from Transpose
+        else if (pattern_map.find(input_c_any_m) != pattern_map.end())
+            data_inputs.push_back(pattern_map.at(input_c_any_m).get_node_shared_ptr());       // V input from Concat or other
 
         auto sdpa = ov::as_type_ptr<op::SDPA>(m.get_match_root());
         if (pattern_map.find(sdpa_with_attn_mask_m) != pattern_map.end()) {
