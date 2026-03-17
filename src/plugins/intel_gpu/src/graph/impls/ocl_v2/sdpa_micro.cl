@@ -615,6 +615,8 @@ KERNEL(micro_sdpa)(OPTIONAL_SHAPE_INFO_ARG
         #else
             col_offset += k - q;
         #endif
+    #else
+        col_offset += k - q;
     #endif
 
         /* Apply causal mask */
