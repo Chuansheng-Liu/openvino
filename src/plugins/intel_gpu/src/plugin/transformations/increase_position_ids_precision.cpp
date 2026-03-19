@@ -331,6 +331,90 @@ IncreasePositionIdsPrecisionForGPTOSS::IncreasePositionIdsPrecisionForGPTOSS() {
 }
 
 
+IncreasePositionIdsPrecisionForModelingRoPE::IncreasePositionIdsPrecisionForModelingRoPE() {
+    using namespace ov::pass::pattern;
+    using ov::pass::pattern::op::Or;
+
+    // Modeling API RoPE pattern (positions multiplied directly by inv_freq constant):
+    //   position_ids (int) → Convert(int→f16) → Unsqueeze → Multiply(inv_freq_const) →
+    //       Cos → Unsqueeze → RoPE (cos input)
+    //       Sin → Unsqueeze → RoPE (sin input)
+    // Position IDs can reach 65536+ which overflows f16 (max ~65504), corrupting RoPE.
+    auto position_ids = any_input();
+    auto convert_to_f16 = wrap_type<ov::op::v0::Convert>({position_ids});
+    auto unsqueeze_pos = wrap_type<ov::op::v0::Unsqueeze>({convert_to_f16, any_input()});
+    auto multiply = wrap_type<ov::op::v1::Multiply>({unsqueeze_pos, any_input()});
+
+    auto cos = wrap_type<ov::op::v0::Cos>({multiply});
+    auto sin = wrap_type<ov::op::v0::Sin>({multiply});
+
+    // Between cos/sin and RoPE there may be an Unsqueeze or nothing
+    auto cos_unsqueeze = wrap_type<ov::op::v0::Unsqueeze>({cos, any_input()});
+    auto cos_input = std::make_shared<Or>(OutputVector{cos, cos_unsqueeze});
+    auto sin_unsqueeze = wrap_type<ov::op::v0::Unsqueeze>({sin, any_input()});
+    auto sin_input = std::make_shared<Or>(OutputVector{sin, sin_unsqueeze});
+
+    auto rope = wrap_type<ov::op::internal::RoPE>({any_input(), cos_input, sin_input});
+
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](ov::pass::pattern::Matcher& m) {
+        const auto& pattern_map = m.get_pattern_value_map();
+
+        auto convert_node = ov::as_type_ptr<ov::op::v0::Convert>(
+            pattern_map.at(convert_to_f16).get_node_shared_ptr());
+        auto multiply_node = ov::as_type_ptr<ov::op::v1::Multiply>(
+            pattern_map.at(multiply).get_node_shared_ptr());
+        auto cos_node = ov::as_type_ptr<ov::op::v0::Cos>(
+            pattern_map.at(cos).get_node_shared_ptr());
+        auto sin_node = ov::as_type_ptr<ov::op::v0::Sin>(
+            pattern_map.at(sin).get_node_shared_ptr());
+
+        if (!convert_node || !multiply_node || transformation_callback(convert_node))
+            return false;
+
+        const auto desired_et = ov::element::f32;
+        const auto original_et = convert_node->get_output_element_type(0);
+        if (original_et == desired_et)
+            return false;
+
+        // Verify the Convert's input is an integer type (position IDs)
+        if (!convert_node->input_value(0).get_element_type().is_integral())
+            return false;
+
+        // 1. Replace Convert(int→f16) with Convert(int→f32)
+        auto new_convert = std::make_shared<ov::op::v0::Convert>(
+            convert_node->input_value(0), desired_et);
+        new_convert->set_friendly_name(convert_node->get_friendly_name() + "_increase_precision");
+        copy_runtime_info(convert_node, new_convert);
+        ov::replace_node(convert_node, new_convert);
+
+        // 2. Promote inv_freq input of Multiply to f32 to match the position path
+        auto unsqueeze_actual = pattern_map.at(unsqueeze_pos).get_node_shared_ptr();
+        for (size_t i = 0; i < multiply_node->get_input_size(); i++) {
+            if (multiply_node->input_value(i).get_node_shared_ptr() == unsqueeze_actual)
+                continue;  // position path, already handled above
+            if (multiply_node->get_input_element_type(i) == desired_et)
+                continue;
+            auto freq_to_f32 = std::make_shared<ov::op::v0::Convert>(
+                multiply_node->input_value(i), desired_et);
+            freq_to_f32->set_friendly_name(
+                multiply_node->input_value(i).get_node()->get_friendly_name() + "_to_f32");
+            copy_runtime_info(multiply_node->input_value(i).get_node_shared_ptr(), freq_to_f32);
+            multiply_node->input(i).replace_source_output(freq_to_f32->output(0));
+        }
+
+        // 3. Insert Convert(f32→original_et) after Cos and Sin to restore original precision for RoPE
+        size_t output_idx = 0;
+        insert_converts_after_if_needed(cos_node, original_et, output_idx);
+        insert_converts_after_if_needed(sin_node, original_et, output_idx);
+
+        return true;
+    };
+
+    auto m = std::make_shared<ov::pass::pattern::Matcher>(
+        rope, "IncreasePositionIdsPrecisionForModelingRoPE");
+    this->register_matcher(m, callback);
+}
+
 IncreasePositionIdsPrecision::IncreasePositionIdsPrecision() {}
 
 bool IncreasePositionIdsPrecision::run_on_model(const std::shared_ptr<ov::Model>& model) {
@@ -340,6 +424,7 @@ bool IncreasePositionIdsPrecision::run_on_model(const std::shared_ptr<ov::Model>
     symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForQwen25VL>();
     symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForLtxVideo>();
     symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForGPTOSS>();
+    symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForModelingRoPE>();
     return symbolic_optimizations.run_on_model(model);
 }
 

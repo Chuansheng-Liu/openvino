@@ -32,6 +32,11 @@ public:
     IncreasePositionIdsPrecisionForGPTOSS();
 };
 
+class IncreasePositionIdsPrecisionForModelingRoPE : public ov::pass::MatcherPass {
+public:
+    OPENVINO_MATCHER_PASS_RTTI("IncreasePositionIdsPrecisionForModelingRoPE");
+    IncreasePositionIdsPrecisionForModelingRoPE();
+};
 
 /**
  * @brief This pass adds additional convert nodes on the position_ids input branch (around MatMul or Multiply operation),
