@@ -333,81 +333,44 @@ IncreasePositionIdsPrecisionForGPTOSS::IncreasePositionIdsPrecisionForGPTOSS() {
 
 IncreasePositionIdsPrecisionForModelingRoPE::IncreasePositionIdsPrecisionForModelingRoPE() {
     using namespace ov::pass::pattern;
-    using ov::pass::pattern::op::Or;
 
-    // Modeling API RoPE pattern (positions multiplied directly by inv_freq constant):
-    //   position_ids (int) → Convert(int→f16) → Unsqueeze → Multiply(inv_freq_const) →
-    //       Cos → Unsqueeze → RoPE (cos input)
-    //       Sin → Unsqueeze → RoPE (sin input)
-    // Position IDs can reach 65536+ which overflows f16 (max ~65504), corrupting RoPE.
-    auto position_ids = any_input();
-    auto convert_to_f16 = wrap_type<ov::op::v0::Convert>({position_ids});
-    auto unsqueeze_pos = wrap_type<ov::op::v0::Unsqueeze>({convert_to_f16, any_input()});
-    auto multiply = wrap_type<ov::op::v1::Multiply>({unsqueeze_pos, any_input()});
-
-    auto cos = wrap_type<ov::op::v0::Cos>({multiply});
-    auto sin = wrap_type<ov::op::v0::Sin>({multiply});
-
-    // Between cos/sin and RoPE there may be an Unsqueeze or nothing
-    auto cos_unsqueeze = wrap_type<ov::op::v0::Unsqueeze>({cos, any_input()});
-    auto cos_input = std::make_shared<Or>(OutputVector{cos, cos_unsqueeze});
-    auto sin_unsqueeze = wrap_type<ov::op::v0::Unsqueeze>({sin, any_input()});
-    auto sin_input = std::make_shared<Or>(OutputVector{sin, sin_unsqueeze});
-
-    auto rope = wrap_type<ov::op::internal::RoPE>({any_input(), cos_input, sin_input});
+    // The modeling API marks the position-ID → freq → cos/sin subgraph with
+    // disable_fp16_compression so ConvertPrecision keeps it in f32 (position IDs
+    // can reach 65536+ which overflows f16 max ~65504).  However, the RoPE GPU
+    // kernel drops vec_size from 16 to 1 when cos/sin inputs are f32 while the
+    // main input (x) is f16.  Since cos/sin values are always in [-1, 1], they
+    // are perfectly representable in f16.  Insert Convert(f32→f16) at RoPE's
+    // cos/sin inputs to restore full vectorization without losing accuracy.
+    // This works for both standard rope_cos_sin and mRoPE topologies.
+    auto rope = wrap_type<ov::op::internal::RoPE>({any_input(), any_input(), any_input()});
 
     ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](ov::pass::pattern::Matcher& m) {
         const auto& pattern_map = m.get_pattern_value_map();
-
-        auto convert_node = ov::as_type_ptr<ov::op::v0::Convert>(
-            pattern_map.at(convert_to_f16).get_node_shared_ptr());
-        auto multiply_node = ov::as_type_ptr<ov::op::v1::Multiply>(
-            pattern_map.at(multiply).get_node_shared_ptr());
-        auto cos_node = ov::as_type_ptr<ov::op::v0::Cos>(
-            pattern_map.at(cos).get_node_shared_ptr());
-        auto sin_node = ov::as_type_ptr<ov::op::v0::Sin>(
-            pattern_map.at(sin).get_node_shared_ptr());
-
-        if (!convert_node || !multiply_node || transformation_callback(convert_node))
+        auto rope_node = ov::as_type_ptr<ov::op::internal::RoPE>(
+            pattern_map.at(rope).get_node_shared_ptr());
+        if (!rope_node || transformation_callback(rope_node))
             return false;
 
-        const auto desired_et = ov::element::f32;
-        const auto original_et = convert_node->get_output_element_type(0);
-        if (original_et == desired_et)
+        const auto input_et = rope_node->get_input_element_type(0);  // main tensor (x), typically f16
+        // Only act when cos/sin are higher precision than the main input
+        if (rope_node->get_input_element_type(1) == input_et &&
+            rope_node->get_input_element_type(2) == input_et)
             return false;
 
-        // Verify the Convert's input is an integer type (position IDs)
-        if (!convert_node->input_value(0).get_element_type().is_integral())
-            return false;
-
-        // 1. Replace Convert(int→f16) with Convert(int→f32)
-        auto new_convert = std::make_shared<ov::op::v0::Convert>(
-            convert_node->input_value(0), desired_et);
-        new_convert->set_friendly_name(convert_node->get_friendly_name() + "_increase_precision");
-        copy_runtime_info(convert_node, new_convert);
-        ov::replace_node(convert_node, new_convert);
-
-        // 2. Promote inv_freq input of Multiply to f32 to match the position path
-        auto unsqueeze_actual = pattern_map.at(unsqueeze_pos).get_node_shared_ptr();
-        for (size_t i = 0; i < multiply_node->get_input_size(); i++) {
-            if (multiply_node->input_value(i).get_node_shared_ptr() == unsqueeze_actual)
-                continue;  // position path, already handled above
-            if (multiply_node->get_input_element_type(i) == desired_et)
-                continue;
-            auto freq_to_f32 = std::make_shared<ov::op::v0::Convert>(
-                multiply_node->input_value(i), desired_et);
-            freq_to_f32->set_friendly_name(
-                multiply_node->input_value(i).get_node()->get_friendly_name() + "_to_f32");
-            copy_runtime_info(multiply_node->input_value(i).get_node_shared_ptr(), freq_to_f32);
-            multiply_node->input(i).replace_source_output(freq_to_f32->output(0));
+        bool changed = false;
+        for (size_t idx : {size_t(1), size_t(2)}) {  // input 1 = cos, input 2 = sin
+            if (rope_node->get_input_element_type(idx) != input_et) {
+                auto convert = std::make_shared<ov::op::v0::Convert>(
+                    rope_node->input_value(idx), input_et);
+                convert->set_friendly_name(
+                    rope_node->input_value(idx).get_node()->get_friendly_name() +
+                    "_downcast_for_rope");
+                ov::copy_runtime_info(rope_node, convert);
+                rope_node->input(idx).replace_source_output(convert->output(0));
+                changed = true;
+            }
         }
-
-        // 3. Insert Convert(f32→original_et) after Cos and Sin to restore original precision for RoPE
-        size_t output_idx = 0;
-        insert_converts_after_if_needed(cos_node, original_et, output_idx);
-        insert_converts_after_if_needed(sin_node, original_et, output_idx);
-
-        return true;
+        return changed;
     };
 
     auto m = std::make_shared<ov::pass::pattern::Matcher>(
