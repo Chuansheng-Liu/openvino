@@ -272,6 +272,9 @@ KERNEL(linear_attention_ref)
 #if OUTPUT_STATE
  __global OUTPUT1_TYPE* output_state,
 #endif
+#if OUTPUT_SNAPSHOTS
+ __global OUTPUT2_TYPE* state_snapshots,
+#endif
  int seq_len,
  int key_offset,
  int value_offset) {
@@ -533,6 +536,34 @@ KERNEL(linear_attention_ref)
             }
 #endif
         }
+#if OUTPUT_SNAPSHOTS
+        // Write per-step state snapshot: layout [B, S, V_HEAD_NUMS, K_HEAD_DIMS, K_HEAD_DIMS]
+        {
+            __global INPUT5_TYPE* snap_ptr = (__global INPUT5_TYPE*)state_snapshots;
+            const int SNAP_HEAD_STRIDE = K_HEAD_DIMS * K_HEAD_DIMS;
+            const int SNAP_STEP_STRIDE = V_HEAD_NUMS * SNAP_HEAD_STRIDE;
+            const int SNAP_BATCH_STRIDE = seq_len * SNAP_STEP_STRIDE;
+            for (int iv = 0; iv < V_BLOCK_SIZE; iv++) {
+                int i_v = i_v_base + iv;
+                int snap_base = b * SNAP_BATCH_STRIDE + i * SNAP_STEP_STRIDE + h * SNAP_HEAD_STRIDE + i_v * K_HEAD_DIMS;
+#if (K_HEAD_DIMS == 128)
+#    if (SUBGROUP_SIZE == 8)
+                store_init_state_128_sg8(init_state[iv], snap_ptr, snap_base);
+#    else
+                store_init_state_128(&init_state[iv], snap_ptr, snap_base);
+#    endif
+#elif (K_HEAD_DIMS % 32) == 0
+#    if (SUBGROUP_SIZE == 16)
+                store_init_state_32_sg16(init_state[iv], snap_ptr, snap_base, id_sg_local);
+#    else
+                store_init_state_32(init_state[iv], snap_ptr, snap_base, id_sg_local);
+#    endif
+#else
+                store_init_state_generic(init_state[iv], snap_ptr, snap_base, id_sg_local);
+#endif
+            }
+        }
+#endif
     }
         // store final state
         __global INPUT5_TYPE* state_out = initial_state;

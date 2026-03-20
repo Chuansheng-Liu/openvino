@@ -22,6 +22,9 @@ KERNEL(fused_conv_ref)(
     __global INPUT3_TYPE* state_in,
     __global OUTPUT_TYPE* output,
     __global OUTPUT1_TYPE* state_out,
+#if OUTPUT_SNAPSHOTS
+    __global OUTPUT2_TYPE* state_snapshots,
+#endif
     int seq_len)
 {
     const int b  = get_global_id(0);
@@ -65,6 +68,17 @@ KERNEL(fused_conv_ref)(
         for (int k = 0; k < KERNEL_SIZE - 1; k++)
             state[k] = state[k + 1];
         state[KERNEL_SIZE - 1] = x_new;
+
+#if OUTPUT_SNAPSHOTS
+        // Write per-step state snapshot: layout [B, S, conv_dim, kernel_size]
+        {
+            const int snap_base = b * seq_len * CONV_DIM * KERNEL_SIZE
+                                + s * CONV_DIM * KERNEL_SIZE
+                                + ch * KERNEL_SIZE;
+            for (int k = 0; k < KERNEL_SIZE; k++)
+                state_snapshots[snap_base + k] = TO_OUTPUT2_TYPE(state[k]);
+        }
+#endif
     }
 
     // 5. Write back updated state

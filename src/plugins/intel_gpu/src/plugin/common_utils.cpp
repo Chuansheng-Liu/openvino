@@ -233,6 +233,7 @@ void convert_and_copy(const ov::ITensor* src, cldnn::memory::ptr dst, cldnn::str
         if (auto remote = dynamic_cast<const ov::intel_gpu::RemoteTensorImpl*>(src)) {
             auto mem = remote->get_original_memory();
             dst->copy_from(stream, *mem, blocking);
+            return;
         } else {
             dst->copy_from(stream, src->data(), blocking);
             return;

@@ -29,6 +29,9 @@ protected:
         jit.make("KERNEL_SIZE", kernel_size);
         jit.make("IO_TYPE", io_type);
 
+        const auto output_snapshots = params.output_layouts.size() > 2 ? 1 : 0;
+        jit.make("OUTPUT_SNAPSHOTS", output_snapshots);
+
         return jit;
     }
 

@@ -34,8 +34,21 @@ std::vector<layout> linear_attention_inst::calc_output_layouts(linear_attention_
     }
     std::vector<layout> output_layouts;
     output_layouts.emplace_back(out_ps, value_layout.data_type, value_layout.format);
-    if (num_outputs == 2) {
+    if (num_outputs >= 2) {
         output_layouts.push_back(impl_param.get_input_layout(5));
+    }
+    if (num_outputs >= 3) {
+        // output[2]: per-step state snapshots [B, S, num_v_heads, head_k_dim, head_v_dim]
+        auto initial_states_layout = impl_param.get_input_layout(5);
+        const auto& h_ps = initial_states_layout.get_partial_shape();
+        ov::PartialShape snap_ps;
+        if (q_ps.rank().is_static() && h_ps.rank().is_static() &&
+            q_ps.rank().get_length() == 4 && h_ps.rank().get_length() == 4) {
+            snap_ps = {q_ps[0], q_ps[1], h_ps[1], h_ps[2], h_ps[3]};
+        } else {
+            snap_ps = ov::PartialShape::dynamic(5);
+        }
+        output_layouts.emplace_back(snap_ps, initial_states_layout.data_type, format::bfzyx);
     }
     return output_layouts;
 }

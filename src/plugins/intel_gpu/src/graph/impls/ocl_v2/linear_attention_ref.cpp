@@ -54,6 +54,9 @@ protected:
         jit.make("SCALE_FACTOR", scale_factor);
         jit.make("OUTPUT_STATE", output_state);
 
+        const auto output_snapshots = params.output_layouts.size() > 2 ? 1 : 0;
+        jit.make("OUTPUT_SNAPSHOTS", output_snapshots);
+
         return jit;
     }
 

@@ -70,8 +70,17 @@ LinearAttention::LinearAttention(const ov::OutputVector& args, const std::shared
     constructor_validate_and_infer_types();
 }
 
+LinearAttention::LinearAttention(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable, bool output_snapshots)
+    : ov::op::Op(args) {
+    m_variable = variable;
+    m_output_snapshots = output_snapshots;
+    constructor_validate_and_infer_types();
+}
+
 bool LinearAttention::visit_attributes(ov::AttributeVisitor& visitor) {
     OV_OP_SCOPE(LinearAttention_visit_attributes);
+
+    visitor.on_attribute("output_snapshots", m_output_snapshots);
 
     // LinearAttention supports both variable-backed and stateless forms.
     // Only serialize/deserialize variable attributes when variable is present
@@ -115,17 +124,29 @@ void LinearAttention::validate_and_infer_types() {
     }
     set_output_type(0, get_input_element_type(0), out_ps);
     set_output_type(1, get_input_element_type(5), h_ps);
+
+    if (m_output_snapshots) {
+        // output[2]: per-step state snapshots [B, S, num_v_heads, head_k_dim, head_v_dim]
+        ov::PartialShape snap_ps;
+        if (q_ps.rank().is_static() && h_ps.rank().is_static() &&
+            q_ps.rank().get_length() == 4 && h_ps.rank().get_length() == 4) {
+            snap_ps = {q_ps[0], q_ps[1], h_ps[1], h_ps[2], h_ps[3]};
+        } else {
+            snap_ps = ov::PartialShape::dynamic(5);
+        }
+        set_output_type(2, get_input_element_type(5), snap_ps);
+    }
 }
 
 std::shared_ptr<ov::Node> LinearAttention::clone_with_new_inputs(const ov::OutputVector& new_args) const {
     if (m_variable) {
-        return std::make_shared<LinearAttention>(new_args, m_variable);
+        return std::make_shared<LinearAttention>(new_args, m_variable, m_output_snapshots);
     }
     return std::make_shared<LinearAttention>(new_args);
 }
 
 void LinearAttention::set_out_type(int index, const ov::element::Type& output_type) {
-    OPENVINO_ASSERT(index < 2, "Output index should be 0 or 1, but got " + std::to_string(index));
+    OPENVINO_ASSERT(index < 3, "Output index should be 0, 1, or 2, but got " + std::to_string(index));
     m_output_type[index] = output_type;
 }
 

@@ -32,6 +32,7 @@ public:
     FusedConv() = default;
 
     FusedConv(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable);
+    FusedConv(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable, bool output_snapshots);
 
     bool visit_attributes(ov::AttributeVisitor& visitor) override;
 
@@ -42,6 +43,17 @@ public:
 
     void validate_and_infer_types() override;
     std::shared_ptr<ov::Node> clone_with_new_inputs(const ov::OutputVector& new_args) const override;
+
+    /// Enable per-step state snapshot output (output[2]).
+    /// When enabled, the op produces 3 outputs:
+    ///   output[0]: conv_output   [B, conv_dim, S]
+    ///   output[1]: updated_state [B, conv_dim, kernel_size]
+    ///   output[2]: state snapshots [B, S, conv_dim, kernel_size]
+    void set_output_snapshots(bool enable) { m_output_snapshots = enable; }
+    bool get_output_snapshots() const { return m_output_snapshots; }
+
+protected:
+    bool m_output_snapshots = false;
 };
 
 }  // namespace op
