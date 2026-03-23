@@ -100,8 +100,8 @@ void LinearAttention::validate_and_infer_types() {
     OV_OP_SCOPE(LinearAttention_validate_and_infer_types);
 
     NODE_VALIDATION_CHECK(this,
-                          get_input_size() == 6,
-                          "LinearAttention expects 6 inputs, but it has ",
+                          get_input_size() == 7,
+                          "LinearAttention expects 7 inputs, but it has ",
                           get_input_size());
 
     // format: Node*, input_idx, name, {rank_list}, {type_list}
@@ -111,6 +111,7 @@ void LinearAttention::validate_and_infer_types() {
     input_check(this, 3, "beta", {3}, {});
     input_check(this, 4, "g", {3}, {});
     input_check(this, 5, "initial_states", {4}, {});
+    input_check(this, 6, "state_update_mode", {0, 1}, {ov::element::i32, ov::element::i64, ov::element::boolean});
 
     // value head_size may be not same with key, output uses value head count
     const auto& q_ps = get_input_partial_shape(0);

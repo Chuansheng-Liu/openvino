@@ -19,7 +19,7 @@ using LinearAttention = ov::op::LinearAttention;
 namespace ov::intel_gpu {
 
 static void CreateLinearAttentionOp(ProgramBuilder& p, const std::shared_ptr<ov::op::LinearAttention>& op) {
-    validate_inputs_count(op, {6});
+    validate_inputs_count(op, {7});
 
     auto inputs = p.GetInputInfo(op);
 

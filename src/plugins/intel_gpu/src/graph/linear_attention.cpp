@@ -21,9 +21,9 @@ std::vector<layout> linear_attention_inst::calc_output_layouts(linear_attention_
     const auto& desc = impl_param.typed_desc<linear_attention>();
     const auto& all_inputs = node.get_input_layouts();
     const auto num_outputs = desc->output_size();
-    if (all_inputs.size() != 6)
-        OPENVINO_THROW("linear_attention's must have 6 inputs");
-    // query, key, value, g, beta, initial_states
+    if (all_inputs.size() != 7)
+        OPENVINO_THROW("linear_attention must have 7 inputs");
+    // query, key, value, g, beta, initial_states, state_update_mode
     auto query_layout = impl_param.get_input_layout(0);
     auto value_layout = impl_param.get_input_layout(2);
     auto out_ps = value_layout.get_partial_shape();

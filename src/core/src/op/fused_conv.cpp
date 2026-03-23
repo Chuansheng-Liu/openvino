@@ -43,8 +43,8 @@ void FusedConv::validate_and_infer_types() {
     OV_OP_SCOPE(FusedConv_validate_and_infer_types);
 
     NODE_VALIDATION_CHECK(this,
-                          get_input_size() == 4,
-                          "FusedConv expects 4 inputs, but it has ",
+                          get_input_size() == 5,
+                          "FusedConv expects 5 inputs, but it has ",
                           get_input_size());
     OPENVINO_ASSERT(m_variable, "Variable is not initialized.");
 
@@ -75,6 +75,17 @@ void FusedConv::validate_and_infer_types() {
                           state_rank.is_dynamic() || state_rank.get_length() == 3,
                           "Rank of `initial_state` should be 3, but it is ",
                           state_rank);
+
+    const auto& mode_rank = get_input_partial_shape(4).rank();
+    NODE_VALIDATION_CHECK(this,
+                          mode_rank.is_dynamic() || mode_rank.get_length() == 0 || mode_rank.get_length() == 1,
+                          "Rank of `state_update_mode` should be 0 or 1, but it is ",
+                          mode_rank);
+    const auto& mode_type = get_input_element_type(4);
+    NODE_VALIDATION_CHECK(this,
+                          mode_type.is_dynamic() || mode_type == ov::element::i32 || mode_type == ov::element::i64 || mode_type == ov::element::boolean,
+                          "Element type of `state_update_mode` should be i32, i64, or boolean, but it is ",
+                          mode_type);
 
     const auto& variable_info = m_variable->get_info();
     const auto& variable_shape = variable_info.data_shape;

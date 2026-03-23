@@ -20,6 +20,7 @@ KERNEL(fused_conv_ref)(
     __global INPUT1_TYPE* conv_weight,
     __global INPUT2_TYPE* beam_idx,
     __global INPUT3_TYPE* state_in,
+    __global INPUT4_TYPE* state_update_mode,
     __global OUTPUT_TYPE* output,
     __global OUTPUT1_TYPE* state_out,
 #if OUTPUT_SNAPSHOTS
@@ -32,6 +33,25 @@ KERNEL(fused_conv_ref)(
 
     if (ch >= CONV_DIM)
         return;
+
+    const int mode = convert_int(state_update_mode[0]);
+
+#if OUTPUT_SNAPSHOTS
+#ifndef SNAP_SEQ_LEN
+#define SNAP_SEQ_LEN seq_len
+#endif
+    // Snapshot commit-by-index: mode < 0 means commit snapshot[(-mode)-1]
+    // to the variable state before processing.
+    if (mode < 0) {
+        const int commit_idx = (-mode) - 1;
+        const int snap_src = b * SNAP_SEQ_LEN * CONV_DIM * KERNEL_SIZE
+                           + commit_idx * CONV_DIM * KERNEL_SIZE
+                           + ch * KERNEL_SIZE;
+        const int state_dst = b * CONV_DIM * KERNEL_SIZE + ch * KERNEL_SIZE;
+        for (int k = 0; k < KERNEL_SIZE; k++)
+            state_out[state_dst + k] = state_snapshots[snap_src + k];
+    }
+#endif
 
     // 1. Beam search reorder: read state from beam_idx[b] source batch
     const int src_b = convert_int(beam_idx[b]);
@@ -72,7 +92,7 @@ KERNEL(fused_conv_ref)(
 #if OUTPUT_SNAPSHOTS
         // Write per-step state snapshot: layout [B, S, conv_dim, kernel_size]
         {
-            const int snap_base = b * seq_len * CONV_DIM * KERNEL_SIZE
+            const int snap_base = b * SNAP_SEQ_LEN * CONV_DIM * KERNEL_SIZE
                                 + s * CONV_DIM * KERNEL_SIZE
                                 + ch * KERNEL_SIZE;
             for (int k = 0; k < KERNEL_SIZE; k++)
@@ -81,8 +101,12 @@ KERNEL(fused_conv_ref)(
 #endif
     }
 
-    // 5. Write back updated state
-    const int state_out_base = b * CONV_DIM * KERNEL_SIZE + ch * KERNEL_SIZE;
-    for (int k = 0; k < KERNEL_SIZE; k++)
-        state_out[state_out_base + k] = TO_OUTPUT1_TYPE(state[k]);
+    // 5. Write back updated state only when mode > 0 (normal commit).
+    //    mode == 0: no commit (deferred verify)
+    //    mode <  0: snapshot was committed above; current step is also deferred
+    if (mode > 0) {
+        const int state_out_base = b * CONV_DIM * KERNEL_SIZE + ch * KERNEL_SIZE;
+        for (int k = 0; k < KERNEL_SIZE; k++)
+            state_out[state_out_base + k] = TO_OUTPUT1_TYPE(state[k]);
+    }
 }

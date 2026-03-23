@@ -19,7 +19,7 @@ using FusedConv = ov::op::FusedConv;
 namespace ov::intel_gpu {
 
 static void CreateFusedConvOp(ProgramBuilder& p, const std::shared_ptr<ov::op::FusedConv>& op) {
-    validate_inputs_count(op, {4});
+    validate_inputs_count(op, {5});
 
     auto inputs = p.GetInputInfo(op);
 

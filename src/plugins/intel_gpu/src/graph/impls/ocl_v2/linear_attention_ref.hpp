@@ -34,6 +34,9 @@ struct LinearAttentionRef : public ImplementationManager {
         for (size_t i = 0; i < node.get_dependencies().size(); i++) {
             const auto& in_layout = node.get_input_layout(i);
             if (!one_of(in_layout.format, supported_fmts) || !one_of(in_layout.data_type, supported_types)) {
+                // state_update_mode (input 6) can be i32
+                if (i == 6)
+                    continue;
                 return false;
             }
         }

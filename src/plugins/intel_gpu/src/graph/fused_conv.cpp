@@ -20,8 +20,8 @@ template<typename ShapeType>
 std::vector<layout> fused_conv_inst::calc_output_layouts(fused_conv_node const& node, const kernel_impl_params& impl_param) {
     const auto& desc = impl_param.typed_desc<fused_conv>();
     const auto num_outputs = desc->output_size();
-    if (impl_param.input_layouts.size() != 4)
-        OPENVINO_THROW("fused_conv must have 4 inputs");
+    if (impl_param.input_layouts.size() != 5)
+        OPENVINO_THROW("fused_conv must have 5 inputs");
 
     // input[0]: [B, conv_dim, S] -> output[0]: [B, conv_dim, S]
     auto input_layout = impl_param.get_input_layout(0);
