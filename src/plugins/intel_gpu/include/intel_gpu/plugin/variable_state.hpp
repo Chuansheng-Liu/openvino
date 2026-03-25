@@ -58,6 +58,8 @@ public:
     void reset() override;
     void set_state(const ov::SoPtr<ov::ITensor>& state) override;
     ov::SoPtr<ov::ITensor> get_state() const override;
+    ov::Shape get_shape() const override;
+    void set_shape(const ov::Shape& shape) override;
 
     cldnn::memory::ptr get_memory() const override;
     const cldnn::layout& get_layout() const override;

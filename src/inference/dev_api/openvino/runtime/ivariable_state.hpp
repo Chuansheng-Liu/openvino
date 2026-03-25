@@ -51,6 +51,25 @@ public:
      */
     virtual ov::SoPtr<ov::ITensor> get_state() const;
 
+    /**
+     * @brief Returns the shape of the variable state without necessarily copying state data.
+     * GPU-accelerated implementations return the shape from device-side metadata,
+     * avoiding an expensive device-to-host data transfer.
+     * @return The shape of the variable state tensor
+     */
+    virtual ov::Shape get_shape() const;
+
+    /**
+     * @brief Sets the shape of the variable state in-place.
+     * For GPU devices with pre-allocated buffers, this is a zero-copy operation
+     * that reinterprets the existing device buffer with the new shape.
+     * Useful for efficiently trimming KV cache tails in speculative decoding.
+     * @param shape The new shape. The total byte size must not exceed the current allocation.
+     * @note Default implementation throws ov::NotImplemented.
+     *       GPU plugin overrides this for zero-copy reshape.
+     */
+    virtual void set_shape(const ov::Shape& shape);
+
 protected:
     /**
      * @brief A default dtor

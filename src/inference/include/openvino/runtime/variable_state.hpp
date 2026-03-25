@@ -74,6 +74,23 @@ public:
      * @param state The current state to set.
      */
     void set_state(const Tensor& state);
+
+    /**
+     * @brief Returns the shape of the variable state.
+     * On GPU devices, avoids the expensive device-to-host data copy
+     * that get_state() would trigger.
+     * @return The shape of the state tensor.
+     */
+    Shape get_shape() const;
+
+    /**
+     * @brief Sets the shape of the variable state in-place.
+     * On GPU devices with pre-allocated buffers, this is a zero-copy operation
+     * that reinterprets the existing device buffer with the new shape.
+     * Useful for efficiently trimming KV cache in speculative decoding.
+     * @param shape The new shape. Must not exceed the current buffer allocation.
+     */
+    void set_shape(const Shape& shape);
 };
 
 }  // namespace ov

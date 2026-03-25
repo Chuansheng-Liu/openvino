@@ -36,11 +36,13 @@ public:
     void set_layout(const cldnn::layout& new_layout) override;
     void set_memory(const cldnn::memory::ptr& new_mem, const cldnn::layout& actual_layout) override;
     size_t get_actual_mem_size() const override;
+    ov::Shape get_shape() const override;
+    void set_shape(const ov::Shape& shape) override;
 
     VariableState::Ptr get_beam_table_state() const;
     ov::PartialShape get_beam_table_shape(const ov::PartialShape& kv_cache_shape);
 
-private:
+protected:
     size_t m_beam_axis = 0;
     size_t m_concat_axis = 0;
 };
@@ -60,6 +62,7 @@ public:
 
     void set_state(const ov::SoPtr<ov::ITensor>& state) override;
     ov::SoPtr<ov::ITensor> get_state() const override;
+    void set_shape(const ov::Shape& shape) override;
 
     VariableState::Ptr get_compression_scale_state() const;
     void set_compression_scale_layout(const cldnn::layout& new_layout);

@@ -5,6 +5,7 @@
 #include "openvino/runtime/ivariable_state.hpp"
 
 #include "openvino/core/except.hpp"
+#include "openvino/runtime/itensor.hpp"
 
 ov::IVariableState::IVariableState(const std::string& name) : m_name(name) {}
 
@@ -24,4 +25,16 @@ void ov::IVariableState::set_state(const ov::SoPtr<ov::ITensor>& state) {
 
 ov::SoPtr<ov::ITensor> ov::IVariableState::get_state() const {
     return m_state;
+}
+
+ov::Shape ov::IVariableState::get_shape() const {
+    auto state = get_state();
+    if (state) {
+        return state->get_shape();
+    }
+    return {};
+}
+
+void ov::IVariableState::set_shape(const ov::Shape& /*shape*/) {
+    OPENVINO_NOT_IMPLEMENTED;
 }

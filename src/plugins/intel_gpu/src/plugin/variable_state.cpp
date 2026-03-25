@@ -147,4 +147,14 @@ ov::SoPtr<ov::ITensor> VariableState::get_state() const {
     return tensor;
 }
 
+ov::Shape VariableState::get_shape() const {
+    return m_layout.get_shape();
+}
+
+void VariableState::set_shape(const ov::Shape& shape) {
+    auto new_layout = m_layout;
+    new_layout.set_partial_shape(shape);
+    set_layout(new_layout);
+}
+
 }  // namespace ov::intel_gpu
