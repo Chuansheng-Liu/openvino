@@ -44,7 +44,11 @@ std::vector<layout> linear_attention_inst::calc_output_layouts(linear_attention_
         ov::PartialShape snap_ps;
         if (q_ps.rank().is_static() && h_ps.rank().is_static() &&
             q_ps.rank().get_length() == 4 && h_ps.rank().get_length() == 4) {
-            snap_ps = {q_ps[0], q_ps[1], h_ps[1], h_ps[2], h_ps[3]};
+            auto snap_s = q_ps[1];
+            if (desc->snapshot_max_seq > 0) {
+                snap_s = desc->snapshot_max_seq;
+            }
+            snap_ps = {q_ps[0], snap_s, h_ps[1], h_ps[2], h_ps[3]};
         } else {
             snap_ps = ov::PartialShape::dynamic(5);
         }

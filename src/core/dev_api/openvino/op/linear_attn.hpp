@@ -21,6 +21,7 @@ public:
     LinearAttention(const ov::OutputVector& args);
     LinearAttention(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable);
     LinearAttention(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable, bool output_snapshots);
+    LinearAttention(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable, bool output_snapshots, int64_t snapshot_max_seq);
 
     bool visit_attributes(ov::AttributeVisitor& visitor) override;
 
@@ -41,9 +42,12 @@ public:
     ///   output[2]: state snapshots   [B, S, num_v_heads, head_k_dim, head_v_dim]
     void set_output_snapshots(bool enable) { m_output_snapshots = enable; }
     bool get_output_snapshots() const { return m_output_snapshots; }
+    void set_snapshot_max_seq(int64_t v) { m_snapshot_max_seq = v; }
+    int64_t get_snapshot_max_seq() const { return m_snapshot_max_seq; }
 
 protected:
     bool m_output_snapshots = false;
+    int64_t m_snapshot_max_seq = 0;  // 0 = use input seq len; >0 = cap snapshot S dim
     std::vector<ov::element::Type> m_output_type = {ov::element::dynamic, ov::element::dynamic, ov::element::dynamic};
 };
 

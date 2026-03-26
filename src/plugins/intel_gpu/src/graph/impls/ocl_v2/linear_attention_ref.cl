@@ -567,8 +567,9 @@ KERNEL(linear_attention_ref)
 #endif
         }
 #if OUTPUT_SNAPSHOTS
-        // Write per-step state snapshot: layout [B, S, V_HEAD_NUMS, K_HEAD_DIMS, K_HEAD_DIMS]
-        {
+        // Write per-step state snapshot only during verify (mode <= 0).
+        // Prefill (mode > 0) skips snapshot writes to avoid O(prompt_len) GPU memory.
+        if (mode <= 0) {
             __global INPUT5_TYPE* snap_ptr = (__global INPUT5_TYPE*)state_snapshots;
             const int SNAP_HEAD_STRIDE = K_HEAD_DIMS * K_HEAD_DIMS;
             const int SNAP_STEP_STRIDE = V_HEAD_NUMS * SNAP_HEAD_STRIDE;

@@ -24,10 +24,19 @@ FusedConv::FusedConv(const ov::OutputVector& args, const std::shared_ptr<ov::op:
     constructor_validate_and_infer_types();
 }
 
+FusedConv::FusedConv(const ov::OutputVector& args, const std::shared_ptr<ov::op::util::Variable>& variable, bool output_snapshots, int64_t snapshot_max_seq)
+    : ov::op::Op(args) {
+    m_variable = variable;
+    m_output_snapshots = output_snapshots;
+    m_snapshot_max_seq = snapshot_max_seq;
+    constructor_validate_and_infer_types();
+}
+
 bool FusedConv::visit_attributes(ov::AttributeVisitor& visitor) {
     OV_OP_SCOPE(FusedConv_visit_attributes);
 
     visitor.on_attribute("output_snapshots", m_output_snapshots);
+    visitor.on_attribute("snapshot_max_seq", m_snapshot_max_seq);
     visitor.on_attribute("variable_id", m_variable);
     OPENVINO_ASSERT(m_variable, "Variable is not initialized.");
 
@@ -113,12 +122,17 @@ void FusedConv::validate_and_infer_types() {
 
     if (m_output_snapshots) {
         // output[2]: per-step state snapshots [B, S, conv_dim, kernel_size]
+        // Cap S at snapshot_max_seq to prevent huge allocation during prefill.
         const auto& in_ps = get_input_partial_shape(0);  // [B, conv_dim, S]
         ov::PartialShape snap_ps;
         if (in_ps.rank().is_static() && initial_shape.rank().is_static() &&
             in_ps.rank().get_length() == 3 && initial_shape.rank().get_length() == 3) {
+            auto snap_s = in_ps[2];
+            if (m_snapshot_max_seq > 0) {
+                snap_s = m_snapshot_max_seq;
+            }
             // [batch, seq_len, conv_dim, kernel_size]
-            snap_ps = {in_ps[0], in_ps[2], initial_shape[1], initial_shape[2]};
+            snap_ps = {in_ps[0], snap_s, initial_shape[1], initial_shape[2]};
         } else {
             snap_ps = ov::PartialShape::dynamic(4);
         }
@@ -128,7 +142,7 @@ void FusedConv::validate_and_infer_types() {
 
 std::shared_ptr<ov::Node> FusedConv::clone_with_new_inputs(const ov::OutputVector& new_args) const {
     check_new_args_count(this, new_args);
-    return std::make_shared<FusedConv>(new_args, m_variable, m_output_snapshots);
+    return std::make_shared<FusedConv>(new_args, m_variable, m_output_snapshots, m_snapshot_max_seq);
 }
 
 }  // namespace op

@@ -33,6 +33,7 @@ struct fused_conv : public primitive_base<fused_conv> {
     }
 
     ov::op::util::VariableInfo variable_info;
+    int64_t snapshot_max_seq = 0;
 
     size_t hash() const override {
         size_t seed = primitive::hash();

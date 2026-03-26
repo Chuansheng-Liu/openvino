@@ -43,6 +43,7 @@ struct linear_attention : public primitive_base<linear_attention> {
     }
 
     ov::op::util::VariableInfo variable_info;
+    int64_t snapshot_max_seq = 0;
 
     size_t hash() const override {
         size_t seed = primitive::hash();

@@ -90,8 +90,9 @@ KERNEL(fused_conv_ref)(
         state[KERNEL_SIZE - 1] = x_new;
 
 #if OUTPUT_SNAPSHOTS
-        // Write per-step state snapshot: layout [B, S, conv_dim, kernel_size]
-        {
+        // Write per-step state snapshot only during verify (mode <= 0).
+        // Prefill (mode > 0) skips snapshot writes to avoid O(prompt_len) GPU memory.
+        if (mode <= 0) {
             const int snap_base = b * SNAP_SEQ_LEN * CONV_DIM * KERNEL_SIZE
                                 + s * CONV_DIM * KERNEL_SIZE
                                 + ch * KERNEL_SIZE;

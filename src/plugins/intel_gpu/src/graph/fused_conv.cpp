@@ -40,7 +40,11 @@ std::vector<layout> fused_conv_inst::calc_output_layouts(fused_conv_node const& 
         ov::PartialShape snap_ps;
         if (in_ps.rank().is_static() && st_ps.rank().is_static() &&
             in_ps.rank().get_length() == 3 && st_ps.rank().get_length() == 3) {
-            snap_ps = {in_ps[0], in_ps[2], st_ps[1], st_ps[2]};
+            auto snap_s = in_ps[2];
+            if (desc->snapshot_max_seq > 0) {
+                snap_s = desc->snapshot_max_seq;
+            }
+            snap_ps = {in_ps[0], snap_s, st_ps[1], st_ps[2]};
         } else {
             snap_ps = ov::PartialShape::dynamic(4);
         }
