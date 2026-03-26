@@ -119,7 +119,8 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
     auto used_usm_device = get_used_device_memory(allocation_type::usm_device);
     auto used_usm_host   = get_used_device_memory(allocation_type::usm_host);
     auto used_cl_mem     = get_used_device_memory(allocation_type::cl_mem);
-    auto used_mem = used_usm_device + used_usm_host + used_cl_mem;
+    // Revert: do not include cl_mem in used_mem to restore pre-OOM-fix behavior
+    auto used_mem = used_usm_device + used_usm_host;
     auto exceed_available_mem_size = (layout.bytes_count() + used_mem > get_max_memory_size());
     if (exceed_available_mem_size) {
         std::cerr << "[GPU][MEM_BREAKDOWN] OOM: requesting=" << layout.bytes_count() / (1024.0*1024*1024) << " GB"
@@ -144,10 +145,11 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
                     "Required ", layout.bytes_count(), " bytes, already occupied : ", used_mem, " bytes, ",
                     "but available memory size is ", get_max_memory_size(), " bytes");
 #else
-    OPENVINO_ASSERT(!exceed_available_mem_size,
-                    "[GPU] Exceeded max size of memory allocation: ",
-                    "Required ", layout.bytes_count(), " bytes, already occupied : ", used_mem, " bytes, ",
-                    "but available memory size is ", get_max_memory_size(), " bytes");
+    if (exceed_available_mem_size) {
+        GPU_DEBUG_COUT << "[Warning] [GPU] Exceeded max size of memory allocation: " << "Required " << layout.bytes_count() << " bytes, already occupied : "
+                       << used_mem << " bytes, but available memory size is " << get_max_memory_size() << " bytes" << std::endl;
+        GPU_DEBUG_COUT << "Please note that performance might drop due to memory swap." << std::endl;
+    }
 #endif
 
     return true;
