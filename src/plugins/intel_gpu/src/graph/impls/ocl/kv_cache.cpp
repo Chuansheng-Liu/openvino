@@ -424,15 +424,35 @@ struct kv_cache_impl : multi_stage_primitive<kv_cache> {
         return params;
     }
 
+    // Remap i4/u4 layout to i8/u8 with halved innermost dim for concat kernel compatibility
+    // (OpenCL has no native int4 type; byte-level layout is identical)
+    static layout remap_i4_layout_for_concat(const layout& l) {
+        if (l.data_type != ov::element::i4 && l.data_type != ov::element::u4)
+            return l;
+        auto new_dt = (l.data_type == ov::element::i4) ? ov::element::i8 : ov::element::u8;
+        auto shape = l.get_partial_shape();
+        // Halve the innermost (last) dimension since 2 i4 values pack into 1 byte
+        auto rank = shape.size();
+        if (rank > 0 && shape[rank - 1].is_static()) {
+            auto dim_val = shape[rank - 1].get_length();
+            shape[rank - 1] = (dim_val + 1) / 2;  // ceil division for odd sizes
+        }
+        return layout{shape, new_dt, l.format};
+    }
+
     static kernel_params_t get_concat_kernel_params(const kernel_impl_params& impl_param, bool is_shape_agnostic = false) {
         const auto& primitive = impl_param.typed_desc<kv_cache>();
         auto params = get_default_params<kernel_selector::concatenation_params>(impl_param, is_shape_agnostic);
         auto axis = primitive->concat_axis;
 
+        // Remap output if i4/u4 (get_default_params sets output from impl_param)
+        auto out_layout = remap_i4_layout_for_concat(impl_param.get_output_layout());
+        params.outputs[0] = convert_data_tensor(out_layout);
+
         const auto inputs_count = 2;
         params.inputs.resize(inputs_count);
         for (size_t i = 0; i < inputs_count; ++i) {
-            params.inputs[i] = convert_data_tensor(impl_param.input_layouts[i]);
+            params.inputs[i] = convert_data_tensor(remap_i4_layout_for_concat(impl_param.input_layouts[i]));
         }
 
         params.axis = convert_axis(axis, impl_param.get_output_layout().get_rank());
@@ -644,9 +664,9 @@ struct kv_cache_impl : multi_stage_primitive<kv_cache> {
         auto& params = static_cast<kernel_params_t&>(*_kernels_data[concat_stage].params);
         const auto inputs_count = 2;
         for (size_t i = 0; i < inputs_count; ++i) {
-            params.inputs[i] = convert_data_tensor(impl_param.input_layouts[i]);
+            params.inputs[i] = convert_data_tensor(remap_i4_layout_for_concat(impl_param.input_layouts[i]));
         }
-        params.outputs[0] = convert_data_tensor(impl_param.output_layouts[0]);
+        params.outputs[0] = convert_data_tensor(remap_i4_layout_for_concat(impl_param.output_layouts[0]));
 
         (_kernels_data[concat_stage].update_dispatch_data_func)(params, _kernels_data[concat_stage]);
         _kernels_data[concat_stage].kernels[0].skip_execution = impl_param._can_be_optimized || impl_param.get_input_layout(0).count() == 0;

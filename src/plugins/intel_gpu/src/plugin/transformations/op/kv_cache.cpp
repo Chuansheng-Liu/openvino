@@ -207,8 +207,10 @@ KVCacheCompressed::KVCacheCompressed(const OutputVector& inputs,
     : KVCache(inputs, past_variable, true, trim, concat_axis, gather_axis, output_type)
     , m_compressed(true)
     , m_quantization_attrs(quantization_attrs) {
-    OPENVINO_ASSERT(quantization_attrs.quantization_dt == ov::element::i8,
-                    "[GPU] Only I8 data type is currently supported for KV-cache compression");
+    OPENVINO_ASSERT(quantization_attrs.quantization_dt == ov::element::i8 ||
+                    quantization_attrs.quantization_dt == ov::element::i4 ||
+                    quantization_attrs.quantization_dt == ov::element::u4,
+                    "[GPU] Only I8/I4/U4 data types are supported for KV-cache compression");
 
     m_variable = past_variable;
     size_t output_size = 3;
