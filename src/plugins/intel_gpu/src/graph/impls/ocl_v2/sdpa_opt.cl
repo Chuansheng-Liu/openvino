@@ -1956,7 +1956,27 @@ KERNEL(sdpa_opt)(
                     #endif // V_HEAD_SIZE_LEFTOVER
 
 #if IS_KV_COMPRESSED_4BIT
+                    #ifdef V_HEAD_SIZE_LEFTOVER
+                        #ifdef BEAM_TABLE_TYPE
+                        VALUE_COMPRESSION_SCALE_TYPE value_val = (head_size_idx <= V_HEAD_SIZE) ?
+                            sdpa_unpack_i4((__global const uchar*)value_input, sub_group_broadcast(value_offset, seq_len_idx)) * sub_group_broadcast(comp_scale, seq_len_idx) :
+                            (VALUE_COMPRESSION_SCALE_TYPE)0;
+                        #else
+                        VALUE_COMPRESSION_SCALE_TYPE value_val;
+                        if (sgid < SUBGROUPS_PER_WG - 1)
+                            value_val = sdpa_unpack_i4((__global const uchar*)value_input, value_offset) * sub_group_broadcast(comp_scale, seq_len_idx);
+                        else
+                            value_val = (sglid < V_HEAD_SIZE_LEFTOVER) ?
+                                sdpa_unpack_i4((__global const uchar*)value_input, value_offset) * sub_group_broadcast(comp_scale, seq_len_idx) :
+                                (VALUE_COMPRESSION_SCALE_TYPE)0;
+                        #endif
+                    #else
+                        #ifdef BEAM_TABLE_TYPE
+                        VALUE_COMPRESSION_SCALE_TYPE value_val = sdpa_unpack_i4((__global const uchar*)value_input, sub_group_broadcast(value_offset, seq_len_idx) + sglid) * sub_group_broadcast(comp_scale, seq_len_idx);
+                        #else
                         VALUE_COMPRESSION_SCALE_TYPE value_val = sdpa_unpack_i4((__global const uchar*)value_input, value_offset) * sub_group_broadcast(comp_scale, seq_len_idx);
+                        #endif
+                    #endif
 #elif IS_KV_COMPRESSED && USE_ASYMMETRIC_QUANTIZATION
                         VALUE_COMPRESSION_SCALE_TYPE value_val = (value_packed - sub_group_broadcast(comp_zp, seq_len_idx)) * sub_group_broadcast(comp_scale, seq_len_idx);
 #elif IS_KV_COMPRESSED
