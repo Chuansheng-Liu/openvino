@@ -55,6 +55,10 @@ micro::Type convert_type(ov::element::Type t) {
         return micro::Type::s8;
     case ov::element::u8:
         return micro::Type::u8;
+    case ov::element::i4:
+        return micro::Type::s4;
+    case ov::element::u4:
+        return micro::Type::u4;
     case ov::element::i32:
         return micro::Type::s32;
     default:
@@ -1056,8 +1060,15 @@ JitConstants SDPAMicroGenerator::get_jit_constants(const kernel_impl_params& par
     jit.make("HEADS_NUM", m_is_gqa_single_token ? config.kv_heads_num : config.heads_num);
 
     jit.make("QRY_DATA_T", to_ocl_type(Q.data_type));
-    jit.make("KEY_DATA_T", to_ocl_type(K.data_type));
-    jit.make("VAL_DATA_T", to_ocl_type(V.data_type));
+
+    // For i4/u4, OpenCL has no native 4-bit type — use uchar (packed bytes)
+    const bool is_key_4bit = (K.data_type == ov::element::i4 || K.data_type == ov::element::u4);
+    const bool is_val_4bit = (V.data_type == ov::element::i4 || V.data_type == ov::element::u4);
+    jit.make("KEY_DATA_T", is_key_4bit ? to_ocl_type(data_types::u8) : to_ocl_type(K.data_type));
+    jit.make("VAL_DATA_T", is_val_4bit ? to_ocl_type(data_types::u8) : to_ocl_type(V.data_type));
+    if (is_key_4bit || is_val_4bit) {
+        jit.make("KV_COMPRESSED_4BIT", 1);
+    }
 
     auto elems_per_byte = [](ov::element::Type dt) {
         switch (dt) {
@@ -1440,7 +1451,10 @@ void SDPAMicroGenerator::init_microkernels(const kernel_impl_params& params,
     bool is_integrated = device_info.dev_type == device_type::integrated_gpu;
 
     bool is_quantized =
-        (K.data_type == ov::element::u8 || K.data_type == ov::element::i8) || (V.data_type == ov::element::u8 || V.data_type == ov::element::i8);
+        (K.data_type == ov::element::u8 || K.data_type == ov::element::i8 ||
+         K.data_type == ov::element::i4 || K.data_type == ov::element::u4) ||
+        (V.data_type == ov::element::u8 || V.data_type == ov::element::i8 ||
+         V.data_type == ov::element::i4 || V.data_type == ov::element::u4);
     int32_t nkeys_v = n_keys.is_dynamic() ? 0 : n_keys.get_length();
 
     GPU_DEBUG_TRACE_DETAIL << "k_head_size = " << k_head_size << ", nkeys_v = " << nkeys_v << "\n";

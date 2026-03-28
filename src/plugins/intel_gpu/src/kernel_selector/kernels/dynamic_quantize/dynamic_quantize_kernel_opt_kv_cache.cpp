@@ -88,6 +88,7 @@ ParamsKey DynamicQuantizeKernelKVCache::GetSupportedKey() const {
     ParamsKey k;
     k.EnableInputDataType(Datatype::F16);
     k.EnableOutputDataType(Datatype::INT8);
+    k.EnableOutputDataType(Datatype::INT4);
     k.EnableDifferentTypes();
     k.EnableAllInputLayout();
     k.EnableAllOutputLayout();
@@ -141,6 +142,11 @@ JitConstants DynamicQuantizeKernelKVCache::GetJitConstants(const dynamic_quantiz
     jit.AddConstant(MakeJitConstant("ITERATIONS_NUMBER", iterations_number));
     jit.AddConstant(MakeJitConstant("ASYMMETRIC_QUANTIZATION", params.use_asymmetric_quantization));
     jit.AddConstant(MakeJitConstant("GROUP_SCALES_WITH_ZP", params.combine_scales_and_zp));
+
+    // Check if output is i4 (4-bit quantization with nibble packing)
+    const bool is_4bit = params.outputs[0].GetDType() == Datatype::INT4 ||
+                         params.outputs[0].GetDType() == Datatype::UINT4;
+    jit.AddConstant(MakeJitConstant("QUANTIZE_4BIT", is_4bit));
 
     // Use FP32 accumulator type for scale/zp calculation
     jit.Merge(MakeTypeJitConstants(Datatype::F32, "ACCUMULATOR"));

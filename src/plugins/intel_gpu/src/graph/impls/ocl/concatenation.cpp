@@ -98,6 +98,8 @@ attach_concatenation_impl::attach_concatenation_impl() {
     auto dyn_types = {
         data_types::i8,
         data_types::u8,
+        data_types::i4,
+        data_types::u4,
         data_types::f16,
         data_types::f32,
         data_types::i32,
@@ -127,6 +129,8 @@ attach_concatenation_impl::attach_concatenation_impl() {
         std::make_tuple(data_types::f16, format::bfyx),
         std::make_tuple(data_types::i8, format::bfyx),
         std::make_tuple(data_types::u8, format::bfyx),
+        std::make_tuple(data_types::i4, format::bfyx),
+        std::make_tuple(data_types::u4, format::bfyx),
         std::make_tuple(data_types::i32, format::bfyx),
         std::make_tuple(data_types::i64, format::bfyx),
         std::make_tuple(data_types::f32, format::byxf),

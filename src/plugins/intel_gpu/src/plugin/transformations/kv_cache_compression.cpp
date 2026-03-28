@@ -137,12 +137,19 @@ public:
 KVCacheCompressionMatcher::KVCacheCompressionMatcher(ov::element::Type compression_dt, bool supports_immad) {
     using namespace ov::pass::pattern;
 
-    if (compression_dt != element::i8 && compression_dt != element::u8)
+    if (compression_dt != element::i8 && compression_dt != element::u8 &&
+        compression_dt != element::i4 && compression_dt != element::u4)
         return;
 
-    const auto quantization_type = ov::op::internal::DynamicQuantize::QuantizationType::Asymmetric;
-    const auto output_storage_type = supports_immad ? ov::op::internal::DynamicQuantize::OutputStorageType::Planar
-                                                    : ov::op::internal::DynamicQuantize::OutputStorageType::InterleavedScalesZP;
+    // For i4/u4 KV cache compression, use symmetric quantization (simpler packing,
+    // no zero-point needed) to reduce overhead in the SDPA dequant kernel.
+    const bool is_int4 = (compression_dt == element::i4 || compression_dt == element::u4);
+    const auto quantization_type = is_int4 ? ov::op::internal::DynamicQuantize::QuantizationType::Symmetric
+                                           : ov::op::internal::DynamicQuantize::QuantizationType::Asymmetric;
+    // For i4 symmetric quant, always use Planar storage (no zero-point interleaving needed).
+    const auto output_storage_type = (is_int4 || supports_immad)
+        ? ov::op::internal::DynamicQuantize::OutputStorageType::Planar
+        : ov::op::internal::DynamicQuantize::OutputStorageType::InterleavedScalesZP;
 
     bool combine_scales_and_zp = output_storage_type == ov::op::internal::DynamicQuantize::OutputStorageType::InterleavedScalesZP;
     GPU_DEBUG_LOG << "KV-cache compression configuration: "
@@ -226,7 +233,7 @@ KVCacheCompressionMatcher::KVCacheCompressionMatcher(ov::element::Type compressi
         ov::op::internal::DynamicQuantize::Attributes config;
         config.quantization_type = quantization_type;
         config.group_sizes = get_shape_group_sizes(sdpa_node->get_input1_transpose_order());
-        config.quantization_dt = element::i8;
+        config.quantization_dt = compression_dt;
         config.scale_dt = query_node->get_output_element_type(0);
         config.scales_zp_output_order = get_scales_output_order(sdpa_node->get_input1_transpose_order());
         config.output_storage_type = output_storage_type;

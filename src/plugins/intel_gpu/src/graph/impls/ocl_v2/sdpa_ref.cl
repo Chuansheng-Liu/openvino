@@ -204,7 +204,17 @@ KERNEL(sdpa_ref)(
 #else
                 KEY_COMPRESSION_SCALE_TYPE comp_zp = 0;
 #endif
+
+#if IS_KV_COMPRESSED_4BIT
+                // i4: read packed byte, extract nibble, sign-extend, dequant
+                uint k_byte_off = key_offset >> 1;
+                uint k_nib = key_offset & 1;
+                uchar k_packed = ((__global const uchar*)key_input)[k_byte_off];
+                int k_raw = k_nib == 0 ? (int)(k_packed & 0x0F) : (int)(k_packed >> 4);
+                KEY_COMPRESSION_SCALE_TYPE k_val = (KEY_COMPRESSION_SCALE_TYPE)(k_raw > 7 ? k_raw - 16 : k_raw) * comp_scale;
+#else
                 KEY_COMPRESSION_SCALE_TYPE k_val = ((k_val_packed - comp_zp) * comp_scale);
+#endif
 
 #else
                 INPUT1_TYPE k_val = k_val_packed;
@@ -303,7 +313,17 @@ KERNEL(sdpa_ref)(
 #else
         VALUE_COMPRESSION_SCALE_TYPE comp_zp = 0;
 #endif
+
+#if IS_KV_COMPRESSED_4BIT
+        // i4: read packed byte, extract nibble, sign-extend, dequant
+        uint v_byte_off = value_offset >> 1;
+        uint v_nib = value_offset & 1;
+        uchar v_packed = ((__global const uchar*)value_input)[v_byte_off];
+        int v_raw = v_nib == 0 ? (int)(v_packed & 0x0F) : (int)(v_packed >> 4);
+        VALUE_COMPRESSION_SCALE_TYPE value = (VALUE_COMPRESSION_SCALE_TYPE)(v_raw > 7 ? v_raw - 16 : v_raw) * comp_scale;
+#else
         VALUE_COMPRESSION_SCALE_TYPE value = ((value_packed - comp_zp) * comp_scale);
+#endif
 #else
         INPUT2_TYPE value = value_packed;
 #endif

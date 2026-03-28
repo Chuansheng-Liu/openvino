@@ -37,14 +37,20 @@ inline uint FUNC(get_scales_offset)(OPTIONAL_SHAPE_INFO_ARG uint b, uint f, uint
 #define SUBGROUP_SIZE 16
 #define INNERMOST_DIM_VALUE INPUT0_SIZE_X
 #define INPUT_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT0_TYPE, 1, ptr, offset)
+#if !QUANTIZE_4BIT
 #define OUTPUT_BLOCK_WRITE(ptr, offset, val) BLOCK_WRITEN(OUTPUT_TYPE, 1, ptr, offset, val)
+#endif
 
 __attribute__((reqd_work_group_size(SUBGROUP_SIZE, SUBGROUPS_NUMBER, 1)))
 REQD_SUB_GROUP_SIZE(SUBGROUP_SIZE)
 KERNEL(dynamic_quantize_gpu_kv_cache)(
     OPTIONAL_SHAPE_INFO_ARG
     const __global INPUT0_TYPE* input,
+#if QUANTIZE_4BIT
+    __global uchar* output,
+#else
     __global OUTPUT_TYPE* output,
+#endif
     __global OUTPUT1_TYPE* output_scale
 #if ASYMMETRIC_QUANTIZATION && !GROUP_SCALES_WITH_ZP
     , __global OUTPUT2_TYPE* output_zp
@@ -95,6 +101,10 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     OUTPUT1_TYPE scale = (OUTPUT1_TYPE)(scale_tmp);
     OUTPUT1_TYPE zp = (OUTPUT1_TYPE)(zp_tmp);
 
+#elif QUANTIZE_4BIT
+    // Symmetric 4-bit: scale = 7 / max_abs, range [-7, 7]
+    max_value = work_group_reduce_max(max_value);
+    OUTPUT1_TYPE scale = 7.0h / max_value;
 #else
     max_value = work_group_reduce_max(max_value);
     OUTPUT1_TYPE scale = 127.0h / max_value;
@@ -104,6 +114,26 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     APPEND_AXIS_NAME += axis_offset;
 #endif
 
+#if QUANTIZE_4BIT
+    // i4 packing: pair adjacent elements (even sglid = low nibble, odd = high nibble)
+    // Compute base byte offset for this token's output row
+    // For bfyx layout with i4, byte offset = element_offset / 2
+    const uint elem_offset = OUTPUT_GET_INDEX(b, f, y, x);
+    unroll_for (uint i = 0; i < INNERMOST_DIM_VALUE / SUBGROUP_SIZE; i++) {
+        // Quantize to signed 4-bit range [-7, 7]
+        char q = clamp(convert_char_rte(val[i] * scale), (char)-7, (char)7);
+        // Exchange with neighbor (even<->odd) via subgroup shuffle
+        char q_neighbor = intel_sub_group_shuffle(q, sglid ^ 1);
+        if ((sglid & 1) == 0) {
+            // Even work item: pack (my_value=low nibble, neighbor=high nibble)
+            uchar lo = (uchar)q & 0x0F;
+            uchar hi = ((uchar)q_neighbor & 0x0F) << 4;
+            uchar packed = lo | hi;
+            uint byte_idx = (elem_offset + i * SUBGROUP_SIZE + sglid) >> 1;
+            output[byte_idx] = packed;
+        }
+    }
+#else
     const uint output_offset = OUTPUT_GET_INDEX(b, f, y, x);
     unroll_for (uint i = 0; i < INNERMOST_DIM_VALUE / SUBGROUP_SIZE; i++) {
 #if ASYMMETRIC_QUANTIZATION
@@ -113,6 +143,7 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
 #endif
         OUTPUT_BLOCK_WRITE(output, output_offset + i * SUBGROUP_SIZE, res);
     }
+#endif
 
     const uint scale_idx = FUNC_CALL(get_scales_offset)(OPTIONAL_SHAPE_INFO_TENSOR b, f, y, x);
 

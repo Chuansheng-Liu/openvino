@@ -213,6 +213,12 @@ bool SDPAOpt::supports_micro_sdpa(const RuntimeParams& params) {
         return false;
     }
 
+    // i4/u4 KV cache not yet supported by micro-kernel GEMM — fall back to sdpa_opt
+    if (k_layout.data_type == ov::element::i4 || k_layout.data_type == ov::element::u4 ||
+        v_layout.data_type == ov::element::i4 || v_layout.data_type == ov::element::u4) {
+        return false;
+    }
+
     auto data_inputs_num = get_data_inputs_num(*desc);
     // TODO: To support sdpa_micro kernel with non-const scalar mask / scale inputs
     const auto mask_idx = 3lu;

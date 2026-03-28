@@ -216,6 +216,12 @@ JitConstants SDPABase::get_jit_constants(const kernel_impl_params& params) const
 
         const auto& in_offsets_map = params.in_port_to_shape_info_offset;
         if (desc->is_kv_compressed) {
+            // Detect 4-bit KV cache compression
+            const bool is_4bit_compressed =
+                desc->quantization_attributes.quantization_dt == ov::element::i4 ||
+                desc->quantization_attributes.quantization_dt == ov::element::u4;
+            jit.make("IS_KV_COMPRESSED_4BIT", is_4bit_compressed);
+
             const auto& group_sizes = desc->quantization_attributes.group_sizes;
             const auto non_compressed_dims = std::count(group_sizes.begin(), group_sizes.end(), 1);
 
