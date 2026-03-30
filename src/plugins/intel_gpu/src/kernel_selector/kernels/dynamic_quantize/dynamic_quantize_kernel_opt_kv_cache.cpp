@@ -23,7 +23,8 @@ static size_t get_elements_number_per_batch(const dynamic_quantize_params& param
 
     size_t total_elements_number = 1;
     for (size_t i = 0; i < group_sizes.size(); i++) {
-        if (group_sizes[i] != UINT64_MAX) {
+        // Only count true batch dims (group_size==1); sub-grouped dims are handled separately
+        if (group_sizes[i] == 1) {
             total_elements_number *= input_dims[i].v;
         }
     }
@@ -119,7 +120,11 @@ JitConstants DynamicQuantizeKernelKVCache::GetJitConstants(const dynamic_quantiz
 
     const auto& input_dims = get_normalized_dims(params.inputs[0]);
     const auto total_grouped_elements = get_elements_number_per_group(params);
-    const auto total_subgroups_number = total_grouped_elements / input_dims.back().v;
+    // For sub-group quantization: innermost group size may be < innermost dim
+    const auto innermost_dim = static_cast<size_t>(input_dims.back().v);
+    const auto innermost_gs = std::min(static_cast<size_t>(group_sizes.back()), innermost_dim);
+    const auto num_inner_groups = (innermost_dim + innermost_gs - 1) / innermost_gs;
+    const auto total_subgroups_number = total_grouped_elements / innermost_gs;
     const auto per_iter_elements_number = get_per_iter_elements_number(params);
     OPENVINO_ASSERT(per_iter_elements_number > 0, "[GPU] per_iter_elements_number is zero, division by zero would occur.");
 
@@ -136,6 +141,12 @@ JitConstants DynamicQuantizeKernelKVCache::GetJitConstants(const dynamic_quantiz
     jit.AddConstant(MakeJitConstant("DECLARE_BATCHED_DIMS_INDEXES(data_idx)", generate_dims_indexes_calculation(batch_dims)));
     jit.AddConstant(MakeJitConstant("DECLARE_GROUPED_DIMS_INDEXES(data_idx)", generate_dims_indexes_calculation(grouped_dims)));
     jit.AddConstant(MakeJitConstant("SUBGROUPS_NUMBER", total_subgroups_number));
+
+    // Sub-group quantization: when innermost group < innermost dim, dispatch multiple work groups
+    if (num_inner_groups > 1) {
+        jit.AddConstant(MakeJitConstant("NUM_INNERMOST_GROUPS", num_inner_groups));
+        jit.AddConstant(MakeJitConstant("INNERMOST_GROUP_SIZE", innermost_gs));
+    }
 
     const auto iterations_number = total_grouped_elements / per_iter_elements_number;
 
@@ -186,11 +197,18 @@ CommonDispatchData DynamicQuantizeKernelKVCache::SetDefault(const dynamic_quanti
     CommonDispatchData dispatchData;
 
     const auto& input_dims = get_normalized_dims(params.inputs[0]);
+    const auto& group_sizes = params.group_sizes;
     const auto total_batched_elements = get_elements_number_per_batch(params);
     const auto total_grouped_elements = get_elements_number_per_group(params);
-    const auto total_subgroups_number = total_grouped_elements / input_dims.back().v;
 
-    dispatchData.gws = {subgroup_size, total_subgroups_number, total_batched_elements};
+    // Sub-group quantization: innermost group may be smaller than innermost dim
+    const auto innermost_dim = static_cast<size_t>(input_dims.back().v);
+    const auto innermost_gs = std::min(static_cast<size_t>(group_sizes.back()), innermost_dim);
+    const auto num_inner_groups = (innermost_dim + innermost_gs - 1) / innermost_gs;
+    const auto total_subgroups_number = total_grouped_elements / innermost_gs;
+
+    // Inner groups are dispatched in gws[1]; each is a separate work group
+    dispatchData.gws = {subgroup_size, total_subgroups_number * num_inner_groups, total_batched_elements};
     dispatchData.lws = {subgroup_size, total_subgroups_number, 1};
 
     return dispatchData;

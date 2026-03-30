@@ -120,9 +120,9 @@ inline uint FUNC(get_bt_index_value)(OPTIONAL_SHAPE_INFO_ARG uint b, uint f, uin
 
 #if IS_KV_COMPRESSED
 #if COMPRESSED_PER_HEAD
-    #define GET_COMPRESSION_INDEX(INPUT, b, f, y, x) GET_DATA_INDEX(INPUT, (b), (f), (y), (0));
+    #define GET_COMPRESSION_INDEX(INPUT, b, f, y, x) GET_DATA_INDEX(INPUT, (b), (f), (y), (x));
 #else
-    #define GET_COMPRESSION_INDEX(INPUT, b, f, y, x) GET_DATA_INDEX(INPUT, (b), (0), (y), (0));
+    #define GET_COMPRESSION_INDEX(INPUT, b, f, y, x) GET_DATA_INDEX(INPUT, (b), (0), (y), (x));
 #endif
 #endif
 
@@ -303,6 +303,9 @@ KERNEL(sdpa_opt)(
                 uint head_idx_index = 0;
                 #define KEY_BLOCK_SIZE 8
                 for (; head_idx_index + (KEY_BLOCK_SIZE * SUBGROUP_SIZE) <= K_HEAD_SIZE; head_idx_index += SUBGROUP_SIZE * KEY_BLOCK_SIZE) {
+#if IS_KV_COMPRESSED && defined(COMPRESSION_GROUP_SIZE)
+                    comp_scale = key_scale[comp_offset + (head_idx_index / COMPRESSION_GROUP_SIZE)];
+#endif
                     #define KEY_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT1_TYPE, KEY_BLOCK_SIZE, ptr, offset);
                     #define KEY_BLOCK MAKE_VECTOR_TYPE(INPUT1_TYPE, KEY_BLOCK_SIZE)
                     #define KEY_BLOCK_UNCOMPRESSED MAKE_VECTOR_TYPE(KEY_COMPRESSION_SCALE_TYPE, KEY_BLOCK_SIZE)
@@ -346,6 +349,9 @@ KERNEL(sdpa_opt)(
 
                 #define KEY_BLOCK_SIZE 4
                 for (; head_idx_index + (KEY_BLOCK_SIZE * SUBGROUP_SIZE) <= K_HEAD_SIZE; head_idx_index += SUBGROUP_SIZE * KEY_BLOCK_SIZE) {
+#if IS_KV_COMPRESSED && defined(COMPRESSION_GROUP_SIZE)
+                    comp_scale = key_scale[comp_offset + (head_idx_index / COMPRESSION_GROUP_SIZE)];
+#endif
                     #define KEY_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT1_TYPE, KEY_BLOCK_SIZE, ptr, offset);
                     #define KEY_BLOCK MAKE_VECTOR_TYPE(INPUT1_TYPE, KEY_BLOCK_SIZE)
                     #define KEY_BLOCK_UNCOMPRESSED MAKE_VECTOR_TYPE(KEY_COMPRESSION_SCALE_TYPE, KEY_BLOCK_SIZE)
@@ -388,6 +394,9 @@ KERNEL(sdpa_opt)(
 
                 #define KEY_BLOCK_SIZE 2
                 for (; head_idx_index + (KEY_BLOCK_SIZE * SUBGROUP_SIZE) <= K_HEAD_SIZE; head_idx_index += SUBGROUP_SIZE * KEY_BLOCK_SIZE) {
+#if IS_KV_COMPRESSED && defined(COMPRESSION_GROUP_SIZE)
+                    comp_scale = key_scale[comp_offset + (head_idx_index / COMPRESSION_GROUP_SIZE)];
+#endif
                     #define KEY_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT1_TYPE, KEY_BLOCK_SIZE, ptr, offset);
                     #define KEY_BLOCK MAKE_VECTOR_TYPE(INPUT1_TYPE, KEY_BLOCK_SIZE)
                     #define KEY_BLOCK_UNCOMPRESSED MAKE_VECTOR_TYPE(KEY_COMPRESSION_SCALE_TYPE, KEY_BLOCK_SIZE)
@@ -430,6 +439,9 @@ KERNEL(sdpa_opt)(
 
                 #define KEY_BLOCK_SIZE 1
                 for (; head_idx_index + (KEY_BLOCK_SIZE * SUBGROUP_SIZE) <= K_HEAD_SIZE; head_idx_index += SUBGROUP_SIZE * KEY_BLOCK_SIZE) {
+#if IS_KV_COMPRESSED && defined(COMPRESSION_GROUP_SIZE)
+                    comp_scale = key_scale[comp_offset + (head_idx_index / COMPRESSION_GROUP_SIZE)];
+#endif
                     #define KEY_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT1_TYPE, KEY_BLOCK_SIZE, ptr, offset);
                     #define KEY_BLOCK MAKE_VECTOR_TYPE(INPUT1_TYPE, KEY_BLOCK_SIZE)
                     #define KEY_BLOCK_UNCOMPRESSED MAKE_VECTOR_TYPE(KEY_COMPRESSION_SCALE_TYPE, KEY_BLOCK_SIZE)
@@ -643,7 +655,12 @@ KERNEL(sdpa_opt)(
 #endif
 
 #if IS_KV_COMPRESSED
-            const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + (seq_len * SUBGROUP_SIZE) + sglid, 0);
+#ifdef COMPRESSION_GROUP_SIZE
+            const uint val_scale_x = head_size_idx / COMPRESSION_GROUP_SIZE;
+#else
+            const uint val_scale_x = 0;
+#endif
+            const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + (seq_len * SUBGROUP_SIZE) + sglid, val_scale_x);
             VALUE_COMPRESSION_SCALE_TYPE comp_scale = val_scale[comp_offset];
 #if USE_ASYMMETRIC_QUANTIZATION
             VALUE_COMPRESSION_SCALE_TYPE comp_zp = val_scale[comp_offset + 1];
@@ -705,7 +722,12 @@ KERNEL(sdpa_opt)(
 #endif
 
 #if IS_KV_COMPRESSED
-            const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + seq_len, 0);
+#ifdef COMPRESSION_GROUP_SIZE
+            const uint val_scale_x2 = head_size_idx / COMPRESSION_GROUP_SIZE;
+#else
+            const uint val_scale_x2 = 0;
+#endif
+            const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + seq_len, val_scale_x2);
             VALUE_COMPRESSION_SCALE_TYPE comp_scale = val_scale[comp_offset];
 #if USE_ASYMMETRIC_QUANTIZATION
             VALUE_COMPRESSION_SCALE_TYPE comp_zp = val_scale[comp_offset + 1];
@@ -1237,6 +1259,9 @@ KERNEL(sdpa_opt)(
                 uint head_idx_index = 0;
                 __attribute__((opencl_unroll_hint(1)))
                 for (; head_idx_index + SUBGROUP_SIZE <= K_HEAD_SIZE; head_idx_index += SUBGROUP_SIZE) {
+#if IS_KV_COMPRESSED && defined(COMPRESSION_GROUP_SIZE)
+                    comp_scale = key_scale[comp_offset + (head_idx_index / COMPRESSION_GROUP_SIZE)];
+#endif
                     #define KEY_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT1_TYPE, 1, ptr, offset);
                     #define QUERY_VEC MAKE_VECTOR_TYPE(INPUT0_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE)
 
@@ -1323,6 +1348,9 @@ KERNEL(sdpa_opt)(
                 uint head_idx_index = 0;
                 __attribute__((opencl_unroll_hint(1)))
                 for (; head_idx_index + SUBGROUP_SIZE <= K_HEAD_SIZE; head_idx_index += SUBGROUP_SIZE) {
+#if IS_KV_COMPRESSED && defined(COMPRESSION_GROUP_SIZE)
+                    comp_scale = key_scale[comp_offset + (head_idx_index / COMPRESSION_GROUP_SIZE)];
+#endif
                     #define KEY_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT1_TYPE, 1, ptr, offset)
                     #define QUERY_VEC_TYPE MAKE_VECTOR_TYPE(INPUT0_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE)
 #if IS_KV_COMPRESSED
@@ -1748,7 +1776,12 @@ KERNEL(sdpa_opt)(
                         qk_val[seq_idx] = slm_qk_vals[seq_idx][seq_len + sglid];
                     }
 #if IS_KV_COMPRESSED
-                    const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + seq_len + sglid, 0);
+#ifdef COMPRESSION_GROUP_SIZE
+                    const uint val_scale_x3 = head_size_idx / COMPRESSION_GROUP_SIZE;
+#else
+                    const uint val_scale_x3 = 0;
+#endif
+                    const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + seq_len + sglid, val_scale_x3);
                     VALUE_COMPRESSION_SCALE_TYPE comp_scale = val_scale[comp_offset];
 #if USE_ASYMMETRIC_QUANTIZATION
                     VALUE_COMPRESSION_SCALE_TYPE comp_zp = val_scale[comp_offset + 1];
@@ -1853,7 +1886,12 @@ KERNEL(sdpa_opt)(
 #endif
 
 #if IS_KV_COMPRESSED
-                    const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + (seq_len * SUBGROUP_SIZE) + sglid, 0);
+#ifdef COMPRESSION_GROUP_SIZE
+                    const uint val_scale_x4 = head_size_idx / COMPRESSION_GROUP_SIZE;
+#else
+                    const uint val_scale_x4 = 0;
+#endif
+                    const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + (seq_len * SUBGROUP_SIZE) + sglid, val_scale_x4);
                     VALUE_COMPRESSION_SCALE_TYPE comp_scale = val_scale[comp_offset];
 #if USE_ASYMMETRIC_QUANTIZATION
                     VALUE_COMPRESSION_SCALE_TYPE comp_zp = val_scale[comp_offset + 1];
@@ -1966,7 +2004,12 @@ KERNEL(sdpa_opt)(
 #endif
 
 #if IS_KV_COMPRESSED
-                    const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + min(seq_len_leftovers_start + sglid, seq_len_end - 1), 0);
+#ifdef COMPRESSION_GROUP_SIZE
+                    const uint val_scale_x5 = head_size_idx / COMPRESSION_GROUP_SIZE;
+#else
+                    const uint val_scale_x5 = 0;
+#endif
+                    const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + min(seq_len_leftovers_start + sglid, seq_len_end - 1), val_scale_x5);
                     // const uint comp_offset = GET_COMPRESSION_INDEX(VALUE_COMPRESSION_SCALE, b_idx, b1_idx / BROADCAST_GROUP_SIZE, start_partition_idx + seq_len_leftovers_start + sglid, 0);
                     VALUE_COMPRESSION_SCALE_TYPE comp_scale = val_scale[comp_offset];
 #if USE_ASYMMETRIC_QUANTIZATION

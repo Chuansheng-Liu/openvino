@@ -36,6 +36,11 @@ inline uint FUNC(get_scales_offset)(OPTIONAL_SHAPE_INFO_ARG uint b, uint f, uint
 
 #define SUBGROUP_SIZE 16
 #define INNERMOST_DIM_VALUE INPUT0_SIZE_X
+#ifdef INNERMOST_GROUP_SIZE
+// Sub-group quantization: override innermost dim to process only group_size elements
+#undef INNERMOST_DIM_VALUE
+#define INNERMOST_DIM_VALUE INNERMOST_GROUP_SIZE
+#endif
 #define INPUT_BLOCK_READ(ptr, offset) BLOCK_READN(INPUT0_TYPE, 1, ptr, offset)
 #if !QUANTIZE_4BIT
 #define OUTPUT_BLOCK_WRITE(ptr, offset, val) BLOCK_WRITEN(OUTPUT_TYPE, 1, ptr, offset, val)
@@ -67,8 +72,16 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     DECLARE_BATCHED_DIMS_INDEXES(batch_indexes);
     DECLARE_GROUPED_DIMS_INDEXES(grouped_indexes);
 
+#ifdef NUM_INNERMOST_GROUPS
+    // Sub-group quantization: grouped_indexes encodes both other-grouped-dims and inner group
+    const uint inner_group_id = grouped_indexes / SUBGROUPS_NUMBER;
+    const uint x = inner_group_id * INNERMOST_DIM_VALUE;
+    const uint scale_x = inner_group_id;
+#else
     // The innermost dimension is always processed in the loop inside the kernel
     const uint x = 0;
+    const uint scale_x = 0;
+#endif
 
     half grp_max = 0.001h;
     half max_value = INPUT0_VAL_MIN;
@@ -119,6 +132,7 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     // Compute base byte offset for this token's output row
     // For bfyx layout with i4, byte offset = element_offset / 2
     const uint elem_offset = OUTPUT_GET_INDEX(b, f, y, x);
+
     unroll_for (uint i = 0; i < INNERMOST_DIM_VALUE / SUBGROUP_SIZE; i++) {
         // Quantize to signed 4-bit range [-7, 7]
         char q = clamp(convert_char_rte(val[i] * scale), (char)-7, (char)7);
@@ -145,9 +159,11 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     }
 #endif
 
-    const uint scale_idx = FUNC_CALL(get_scales_offset)(OPTIONAL_SHAPE_INFO_TENSOR b, f, y, x);
+    const uint scale_idx = FUNC_CALL(get_scales_offset)(OPTIONAL_SHAPE_INFO_TENSOR b, f, y, scale_x);
 
-    if (grouped_indexes == 0 && sglid == 0) {
+    // Use get_local_id(1) instead of grouped_indexes to handle sub-group dispatch correctly:
+    // each inner-group work group should write its own scale independently.
+    if (get_local_id(1) == 0 && sglid == 0) {
 #if ASYMMETRIC_QUANTIZATION
         output_scale[scale_idx] = 1.0h / scale;
 #if GROUP_SCALES_WITH_ZP

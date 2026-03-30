@@ -214,7 +214,10 @@ KVCacheCompressionMatcher::KVCacheCompressionMatcher(ov::element::Type compressi
                 std::iota(order.begin(), order.end(), 0);
             }
 
-            group_sizes[order[data_rank - 1]] = UINT64_MAX;
+            // For i4: use sub-group quantization (group_size=128) to improve precision
+            // when head_dim is large (e.g., 256). This produces multiple scales per
+            // (batch, head, seq) tuple, enabling finer-grained quantization.
+            group_sizes[order[data_rank - 1]] = is_int4 ? 128 : UINT64_MAX;
 
             return group_sizes;
         };

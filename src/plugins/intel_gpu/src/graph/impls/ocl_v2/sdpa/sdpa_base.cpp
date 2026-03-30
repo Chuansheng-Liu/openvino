@@ -238,6 +238,15 @@ JitConstants SDPABase::get_jit_constants(const kernel_impl_params& params) const
             jit.add(make_layout_jit_constants("KEY_COMPRESSION_SCALE", params.input_layouts[data_inputs_num], in_offsets_map.at(data_inputs_num)));
             jit.add(make_layout_jit_constants("VALUE_COMPRESSION_SCALE", params.input_layouts[data_inputs_num + 1], in_offsets_map.at(data_inputs_num + 1)));
 
+            // Sub-group quantization: expose innermost group_size to SDPA kernel
+            // so it can select the correct per-sub-group scale during dequantization.
+            if (!group_sizes.empty()) {
+                const auto innermost_gs = group_sizes.back();
+                if (innermost_gs != UINT64_MAX && innermost_gs > 1) {
+                    jit.make("COMPRESSION_GROUP_SIZE", innermost_gs);
+                }
+            }
+
             if (is_asym_quantization && !combined_scale_and_zp) {
                 jit.add(make_layout_jit_constants("KEY_COMPRESSION_ZP", params.input_layouts[data_inputs_num + 2], in_offsets_map.at(data_inputs_num + 2)));
                 jit.add(make_layout_jit_constants("VALUE_COMPRESSION_ZP", params.input_layouts[data_inputs_num + 3], in_offsets_map.at(data_inputs_num + 3)));
@@ -304,6 +313,7 @@ JitConstants SDPABase::get_jit_constants(const kernel_impl_params& params) const
         auto k_head_size = get_head_size(params.get_input_layout(1), extended_input_k_transpose_order);
         const auto k_num_head = get_num_heads(params.get_input_layout(1), extended_input_k_transpose_order);
         auto v_head_size = get_head_size(params.get_input_layout(2), extended_input_v_transpose_order);
+
 
         // For 4-bit compressed KV cache, the layout's innermost dimension is doubled
         // (2 i4 elements per byte stored as char type). Use the query head_size as the
