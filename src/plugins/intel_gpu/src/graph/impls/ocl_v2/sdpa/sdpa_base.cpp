@@ -301,9 +301,21 @@ JitConstants SDPABase::get_jit_constants(const kernel_impl_params& params) const
 
         const auto q_head_size = get_head_size(params.get_input_layout(0), extended_input_q_transpose_order);
         const auto q_num_head = get_num_heads(params.get_input_layout(0), extended_input_q_transpose_order);
-        const auto k_head_size = get_head_size(params.get_input_layout(1), extended_input_k_transpose_order);
+        auto k_head_size = get_head_size(params.get_input_layout(1), extended_input_k_transpose_order);
         const auto k_num_head = get_num_heads(params.get_input_layout(1), extended_input_k_transpose_order);
-        const auto v_head_size = get_head_size(params.get_input_layout(2), extended_input_v_transpose_order);
+        auto v_head_size = get_head_size(params.get_input_layout(2), extended_input_v_transpose_order);
+
+        // For 4-bit compressed KV cache, the layout's innermost dimension is doubled
+        // (2 i4 elements per byte stored as char type). Use the query head_size as the
+        // authoritative logical head_size for dot product bounds and attention scaling.
+        if (desc->is_kv_compressed) {
+            const auto& qdt = desc->quantization_attributes.quantization_dt;
+            if (qdt == ov::element::i4 || qdt == ov::element::u4) {
+                k_head_size = q_head_size;
+                v_head_size = q_head_size;
+            }
+        }
+
         jit.make("HEAD_SIZE", q_head_size);
         jit.make("NUM_HEADS", q_num_head);
         jit.make("K_HEAD_SIZE", k_head_size);

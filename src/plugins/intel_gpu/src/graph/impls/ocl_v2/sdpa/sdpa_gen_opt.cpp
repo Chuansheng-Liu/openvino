@@ -63,6 +63,16 @@ JitConstants SDPAOptGeneratorBase::get_jit_constants_base(const kernel_impl_para
         auto extended_input_v_transpose_order = extend_order_in_num_heads_dim(desc->input_v_transpose_order);
         k_head_size = get_head_size(k_layout, extended_input_k_transpose_order);
         v_head_size = get_head_size(v_layout, extended_input_v_transpose_order);
+        // For 4-bit compressed KV, layout innermost dim is doubled; use query head_size
+        if (desc->is_kv_compressed) {
+            const auto& qdt = desc->quantization_attributes.quantization_dt;
+            if (qdt == ov::element::i4 || qdt == ov::element::u4) {
+                const auto& q_layout = params.get_input_layout(0);
+                auto extended_input_q_transpose_order = extend_order_in_num_heads_dim(desc->input_q_transpose_order);
+                k_head_size = get_head_size(q_layout, extended_input_q_transpose_order);
+                v_head_size = k_head_size;
+            }
+        }
         GPU_DEBUG_TRACE_DETAIL << "k_head_size = " << k_head_size << ", v_head_size = " << v_head_size << "\n";
 
         size_t data_inputs_num = get_data_inputs_num(*desc);
