@@ -214,7 +214,18 @@ void VariableStateIndirectKVCacheCompressed::set_state(const ov::SoPtr<ov::ITens
 }
 
 ov::SoPtr<ov::ITensor> VariableStateIndirectKVCacheCompressed::get_state() const {
-    OPENVINO_THROW("[GPU] get_state API is supported only when KV-cache compression is disabled");
+    // For compressed KV cache, return a host tensor with the actual compressed dtype (i4/i8)
+    // and shape matching the stored data. This allows callers to query get_byte_size()
+    // for memory usage reporting without requiring an actual device→host copy
+    // (which would fail since convert_and_copy doesn't handle i4/i8→i4/i8).
+    auto kv_layout = m_hidden_states[0]->get_layout();
+    auto actual_dtype = ov::element::Type(kv_layout.data_type);
+    auto kv_mem = m_hidden_states[0]->get_memory();
+    if (kv_mem == nullptr) {
+        const auto& shape = get_tensor_shape(kv_layout.get_partial_shape());
+        return m_context->create_host_tensor(actual_dtype, shape);
+    }
+    return m_context->create_host_tensor(actual_dtype, kv_mem->get_layout().get_shape());
 }
 
 }  // namespace ov::intel_gpu
