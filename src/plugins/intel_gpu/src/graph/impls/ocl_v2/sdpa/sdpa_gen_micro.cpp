@@ -1092,8 +1092,18 @@ JitConstants SDPAMicroGenerator::get_jit_constants(const kernel_impl_params& par
         int vs_scale_mask = (static_cast<int>(config.is_kv_compressed) << 1) | static_cast<int>(vs_common_scales);
         jit.make("KEY_SCALES", kq_scale_mask);
         jit.make("VAL_SCALES", vs_scale_mask);
-        jit.make("KEY_GROUP_SIZE", head_size);
-        jit.make("VAL_GROUP_SIZE", head_size);
+
+        // Use actual compression group size for sub-group quantization (e.g. 128 for i4)
+        const auto sdpa_desc = params.typed_desc<scaled_dot_product_attention>();
+        const auto& group_sizes = sdpa_desc->quantization_attributes.group_sizes;
+        uint64_t innermost_gs = head_size;
+        if (!group_sizes.empty()) {
+            const auto gs_back = group_sizes.back();
+            if (gs_back != UINT64_MAX && gs_back > 1)
+                innermost_gs = gs_back;
+        }
+        jit.make("KEY_GROUP_SIZE", innermost_gs);
+        jit.make("VAL_GROUP_SIZE", innermost_gs);
 
         jit.add(make_layout_jit_constants("KEY_SCALE", key_cache_comp_scale, params.in_port_to_shape_info_offset.at(data_inputs_num)));
         jit.add(make_layout_jit_constants("VAL_SCALE", value_cache_comp_scale, params.in_port_to_shape_info_offset.at(data_inputs_num + 1)));
@@ -1117,6 +1127,10 @@ JitConstants SDPAMicroGenerator::get_jit_constants(const kernel_impl_params& par
             jit.make("VAL_ZERO_POINTS", vs_zp_mask);
             jit.make("KEY_ZP_ELEMENTS_PER_BYTE", elems_per_byte(key_cache_comp_zp.data_type));
             jit.make("VAL_ZP_ELEMENTS_PER_BYTE", elems_per_byte(value_cache_comp_zp.data_type));
+        } else {
+            // Symmetric quantization: kernel params still reference ZP types, provide dummy defs
+            jit.make("KEY_ATTR_ZP_DATA_T", "char");
+            jit.make("VAL_ATTR_ZP_DATA_T", "char");
         }
     }
 
@@ -1566,7 +1580,16 @@ void SDPAMicroGenerator::init_microkernels(const kernel_impl_params& params,
 
         if (configuration.is_kv_compressed) {
             problem_kq.aqGroupM = 1;
-            problem_kq.aqGroupK = (kq_common_scales || kq_common_zp) ? 1 : static_cast<int>(k_head_size);
+            // Use actual compression group size for sub-group quantization
+            const auto sdpa_desc = params.typed_desc<scaled_dot_product_attention>();
+            const auto& group_sizes = sdpa_desc->quantization_attributes.group_sizes;
+            int kq_gs = static_cast<int>(k_head_size);
+            if (!group_sizes.empty() && !(kq_common_scales || kq_common_zp)) {
+                const auto gs_back = group_sizes.back();
+                if (gs_back != UINT64_MAX && gs_back > 1)
+                    kq_gs = static_cast<int>(gs_back);
+            }
+            problem_kq.aqGroupK = (kq_common_scales || kq_common_zp) ? 1 : kq_gs;
         }
 
         opts_kq.scaleA = configuration.is_kv_compressed && !kq_common_scales;
@@ -1694,7 +1717,16 @@ void SDPAMicroGenerator::init_microkernels(const kernel_impl_params& params,
         }
 
         if (configuration.is_kv_compressed) {
-            problem_vs.aqGroupM = (vs_common_scales || vs_common_zp) ? 1 : static_cast<int>(micro::rnd_up_pow2(v_head_size));
+            // Use actual compression group size for sub-group quantization
+            const auto sdpa_desc = params.typed_desc<scaled_dot_product_attention>();
+            const auto& group_sizes = sdpa_desc->quantization_attributes.group_sizes;
+            int vs_gs = static_cast<int>(micro::rnd_up_pow2(v_head_size));
+            if (!group_sizes.empty() && !(vs_common_scales || vs_common_zp)) {
+                const auto gs_back = group_sizes.back();
+                if (gs_back != UINT64_MAX && gs_back > 1)
+                    vs_gs = static_cast<int>(gs_back);
+            }
+            problem_vs.aqGroupM = (vs_common_scales || vs_common_zp) ? 1 : vs_gs;
             problem_vs.aqGroupK = 1;
         }
 

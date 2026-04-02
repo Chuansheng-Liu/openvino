@@ -129,7 +129,12 @@ public:
         }
 #ifdef ENABLE_ONEDNN_FOR_GPU
         if (has_stage(regular_micro_single_token) && !is_indirect) {
-            return execute_stage(events, instance, regular_micro_single_token);
+            // TODO: nGEN microkernel has a bug with sub-byte (s4/u4) KV types at 2K+ context
+            // that causes GPU memory faults during single-token decode. Use sdpa_opt fallback.
+            auto key_dt = new_params.input_layouts[1].data_type;
+            if (key_dt != ov::element::i4 && key_dt != ov::element::u4) {
+                return execute_stage(events, instance, regular_micro_single_token);
+            }
         }
 #endif
         const auto num_of_partitions = get_partitions_num(new_params, SDPAStage::SINGLE_TOKEN);
@@ -213,11 +218,9 @@ bool SDPAOpt::supports_micro_sdpa(const RuntimeParams& params) {
         return false;
     }
 
-    // i4/u4 KV cache not yet supported by micro-kernel GEMM — fall back to sdpa_opt
-    if (k_layout.data_type == ov::element::i4 || k_layout.data_type == ov::element::u4 ||
-        v_layout.data_type == ov::element::i4 || v_layout.data_type == ov::element::u4) {
-        return false;
-    }
+    // nGEN micro-GEMM s4 dequant requires IEEE denormals enabled in CR0.
+    // Fixed in gemm_microkernel.cxx: microkernel prologue now saves/restores
+    // CR0 with denormal enable bits (0x4C0) for correct s4→f16 conversion.
 
     auto data_inputs_num = get_data_inputs_num(*desc);
     // TODO: To support sdpa_micro kernel with non-const scalar mask / scale inputs

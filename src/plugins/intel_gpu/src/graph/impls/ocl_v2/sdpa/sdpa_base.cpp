@@ -244,6 +244,10 @@ JitConstants SDPABase::get_jit_constants(const kernel_impl_params& params) const
                 const auto innermost_gs = group_sizes.back();
                 if (innermost_gs != UINT64_MAX && innermost_gs > 1) {
                     jit.make("COMPRESSION_GROUP_SIZE", innermost_gs);
+                    // Precompute log2 shift for replacing division with bit-shift
+                    uint32_t shift = 0;
+                    for (auto v = innermost_gs; v > 1; v >>= 1) shift++;
+                    jit.make("COMPRESSION_GROUP_SIZE_SHIFT", shift);
                 }
             }
 
