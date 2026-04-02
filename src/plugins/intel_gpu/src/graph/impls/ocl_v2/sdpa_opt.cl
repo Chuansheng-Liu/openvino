@@ -129,17 +129,26 @@ inline uint FUNC(get_bt_index_value)(OPTIONAL_SHAPE_INFO_ARG uint b, uint f, uin
 #if IS_KV_COMPRESSED_4BIT
 #ifndef SDPA_UNPACK_I4_MACRO
 #define SDPA_UNPACK_I4_MACRO
-// i4 unpack: read packed byte, extract nibble, sign-extend, cast to scale type
+// i4 unpack: read packed byte, extract nibble, sign-extend
 // elem[2k] in low nibble, elem[2k+1] in high nibble (two's complement i4)
+// Returns float for f32 precision dequantization (code * scale computed in f32)
 #define SDPA_UNPACK_I4(data, elem_idx) \
     ({ \
         uint _byte_idx = (uint)(elem_idx) >> 1; \
         uchar _packed = ((__global const uchar*)(data))[_byte_idx]; \
         int _raw = ((elem_idx) & 1) ? (int)(_packed >> 4) : (int)(_packed & 0x0F); \
-        (KEY_COMPRESSION_SCALE_TYPE)(_raw > 7 ? _raw - 16 : _raw); \
+        (float)(_raw > 7 ? _raw - 16 : _raw); \
     })
 #endif
 #endif
+
+// Q*K^T accumulator type: keep half for all paths (consistent with i8 behavior)
+#define QK_ACCUMULATOR_TYPE INPUT0_TYPE
+#define QK_ACCUMULATOR_VAL_ZERO INPUT0_VAL_ZERO
+#define QK_ACCUMULATOR_VAL_MIN INPUT0_VAL_MIN
+#define TO_QK_ACCUMULATOR_TYPE(x) (x)
+#define QK_ACCUMULATOR_MAX_FUNC INPUT0_MAX_FUNC
+#define QK_ACCUMULATOR_MIN_FUNC INPUT0_MIN_FUNC
 
 #ifdef SDPA_STAGE_0
 
@@ -1203,7 +1212,7 @@ KERNEL(sdpa_opt)(
         const uint partition_seq_len = min((uint)SOURCE_SEQ_LEN - start_partition_idx, (uint)SEQ_LEN_PARTITION_SIZE);
 #endif
 
-        MAKE_VECTOR_TYPE(INPUT0_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE) qk_acc = INPUT0_VAL_ZERO;
+        MAKE_VECTOR_TYPE(QK_ACCUMULATOR_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE) qk_acc = QK_ACCUMULATOR_VAL_ZERO;
 #if IS_CAUSAL
         if (seq_len <= target_seq_idx) { // keep tril i.e. m >= n
 #endif
@@ -1237,15 +1246,21 @@ KERNEL(sdpa_opt)(
 #endif // IS_PAGED_ATTENTION
             int seq_len_calc_size = min((int)(SOURCE_SEQ_LEN) - (int)seq_len, (int)SUBGROUP_SIZE);
 #if !IS_CAUSAL
-            qk_acc = FUNC_CALL(load_attn_mask)(OPTIONAL_SHAPE_INFO_TENSOR
-                            b0_idx,
-                            b1_idx,
-                            target_seq_idx + sglid,
-                            // TODO: pass seq_len_calc_size here
-                            seq_len
-                            ATTN_MASK_BUFFER
-                            ATTN_SCALE_BUFFER
-                            PA_BUFFERS);
+            {
+                MAKE_VECTOR_TYPE(INPUT0_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE) mask_vals;
+                mask_vals = FUNC_CALL(load_attn_mask)(OPTIONAL_SHAPE_INFO_TENSOR
+                                b0_idx,
+                                b1_idx,
+                                target_seq_idx + sglid,
+                                // TODO: pass seq_len_calc_size here
+                                seq_len
+                                ATTN_MASK_BUFFER
+                                ATTN_SCALE_BUFFER
+                                PA_BUFFERS);
+                unroll_for (uint mi = 0; mi < TARGET_SEQ_LEN_BLOCK_SIZE; mi++) {
+                    qk_acc[mi] = TO_QK_ACCUMULATOR_TYPE(mask_vals[mi]);
+                }
+            }
 #endif  // !IS_CAUSAL
 
             if (seq_len_calc_size >= SUBGROUP_SIZE) {
@@ -1295,7 +1310,7 @@ KERNEL(sdpa_opt)(
 #endif
 
                         unroll_for (uint i = 0; i < SUBGROUP_SIZE; i++) {
-                            qk_acc[key_row_idx] = mad(sub_group_broadcast(key_vals, i), queries_vec[i], qk_acc[key_row_idx]);
+                            qk_acc[key_row_idx] = mad(TO_QK_ACCUMULATOR_TYPE(sub_group_broadcast(key_vals, i)), TO_QK_ACCUMULATOR_TYPE(queries_vec[i]), qk_acc[key_row_idx]);
                         }
                     }
                 }
@@ -1332,7 +1347,7 @@ KERNEL(sdpa_opt)(
 #endif
 #endif
                         unroll_for (uint i = 0; i < K_HEAD_SIZE_LEFTOVER; i++) {
-                            qk_acc[key_row_idx] = mad(sub_group_broadcast(key_vals, i), queries_vec[i], qk_acc[key_row_idx]);
+                            qk_acc[key_row_idx] = mad(TO_QK_ACCUMULATOR_TYPE(sub_group_broadcast(key_vals, i)), TO_QK_ACCUMULATOR_TYPE(queries_vec[i]), qk_acc[key_row_idx]);
                         }
                     }
                 #endif
@@ -1424,7 +1439,7 @@ KERNEL(sdpa_opt)(
                         #define key_vals key_vec[key_row_idx]
 #endif  // !defined(LOAD_KEY_LEFTOVERS_IN_CALC_LOOP)
                         unroll_for (uint i = 0; i < SUBGROUP_SIZE; i++) {
-                            qk_acc[key_row_idx] = mad(sub_group_broadcast(key_vals, i), queries_vec[i], qk_acc[key_row_idx]);
+                            qk_acc[key_row_idx] = mad(TO_QK_ACCUMULATOR_TYPE(sub_group_broadcast(key_vals, i)), TO_QK_ACCUMULATOR_TYPE(queries_vec[i]), qk_acc[key_row_idx]);
                         }
                     }
                 }
@@ -1461,7 +1476,7 @@ KERNEL(sdpa_opt)(
 #endif
 #endif
                         unroll_for (uint i = 0; i < K_HEAD_SIZE_LEFTOVER; i++) {
-                            qk_acc[key_row_idx] = mad(sub_group_broadcast(key_val, i), queries_vec[i], qk_acc[key_row_idx]);
+                            qk_acc[key_row_idx] = mad(TO_QK_ACCUMULATOR_TYPE(sub_group_broadcast(key_val, i)), TO_QK_ACCUMULATOR_TYPE(queries_vec[i]), qk_acc[key_row_idx]);
                         }
                     }
                 #endif // K_HEAD_SIZE_LEFTOVER
@@ -1485,18 +1500,18 @@ KERNEL(sdpa_opt)(
 #else
                         const OUTPUT_TYPE scale_val = TO_OUTPUT_TYPE(STATIC_SCALE_VALUE);
 #endif
-                        qk_acc[i] *= scale_val;
+                        qk_acc[i] *= TO_QK_ACCUMULATOR_TYPE(scale_val);
 #endif // !APPLY_SCALES_TO_QUERY
 
 #ifdef HAS_ALIBI
                         const int alibi_val = (1 - SOURCE_SEQ_LEN) + seq_len + i;
-                        qk_acc[i] += alibi_slopes[num_heads_dim] * alibi_val;
+                        qk_acc[i] += TO_QK_ACCUMULATOR_TYPE(alibi_slopes[num_heads_dim] * alibi_val);
 #endif
 
-                        qk_acc[i] = INPUT0_MIN_FUNC(INPUT0_MAX_FUNC(qk_acc[i], INPUT0_VAL_MIN), INPUT0_VAL_MAX);
+                        qk_acc[i] = QK_ACCUMULATOR_MIN_FUNC(QK_ACCUMULATOR_MAX_FUNC(qk_acc[i], QK_ACCUMULATOR_VAL_MIN), (QK_ACCUMULATOR_TYPE)INPUT0_VAL_MAX);
 #if IS_CAUSAL
                     } else {
-                        qk_acc[i] = INPUT0_VAL_MIN;
+                        qk_acc[i] = QK_ACCUMULATOR_VAL_MIN;
                     }
 #endif  // IS_CAUSAL
                     qk_max = SOFTMAX_ACCUMULATOR_MAX_FUNC(qk_max, TO_SOFTMAX_ACCUMULATOR_TYPE(qk_acc[i]));

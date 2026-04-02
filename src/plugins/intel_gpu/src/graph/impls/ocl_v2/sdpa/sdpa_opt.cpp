@@ -115,8 +115,13 @@ public:
         update_rt_params(instance);
 #ifdef ENABLE_ONEDNN_FOR_GPU
         if (has_stage(regular_micro_multi_tokens) && is_prefill && !is_indirect) {
-            GPU_DEBUG_TRACE_DETAIL << "execute regular_micro_multi_tokens for prefill \n";
-            return execute_stage(events, instance, regular_micro_multi_tokens);
+            // Skip micro for i4/u4: nGEN microkernel doesn't support sub-group
+            // quantization scales (COMPRESSION_GROUP_SIZE), producing wrong dequant.
+            auto key_dt = new_params.input_layouts[1].data_type;
+            if (key_dt != ov::element::i4 && key_dt != ov::element::u4) {
+                GPU_DEBUG_TRACE_DETAIL << "execute regular_micro_multi_tokens for prefill \n";
+                return execute_stage(events, instance, regular_micro_multi_tokens);
+            }
         }
 #endif
         // TODO: Unaligned head size is currently supported by only multi tokens kernel.

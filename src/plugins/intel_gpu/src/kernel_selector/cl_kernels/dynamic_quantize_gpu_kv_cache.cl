@@ -90,6 +90,18 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     half val[INNERMOST_DIM_VALUE / SUBGROUP_SIZE];
 
     const uint input_offset = INPUT0_GET_INDEX(b, f, y, x);
+#if QUANTIZE_4BIT
+    // TurboQuant-matching i4 encode: L2-normalize in f32, then quantize with fixed 7/3.
+    // Matches CPU TQ: x_norm = x/||x||; x_scaled = x_norm*sqrt(D); code = round(clip(x_scaled,±3)*7/3)
+    // dequant_scale = ||x|| * 3/(7*sqrt(D))  (stored, SDPA multiplies code * dequant_scale)
+    float sum_sq = 0.0f;
+    float val_f32[INNERMOST_DIM_VALUE / SUBGROUP_SIZE];
+    unroll_for (uint i = 0; i < INNERMOST_DIM_VALUE / SUBGROUP_SIZE; i++) {
+        val[i] = INPUT_BLOCK_READ(input, input_offset + i * SUBGROUP_SIZE);
+        val_f32[i] = convert_float(val[i]);
+        sum_sq += val_f32[i] * val_f32[i];
+    }
+#else
     unroll_for (uint i = 0; i < INNERMOST_DIM_VALUE / SUBGROUP_SIZE; i++) {
         val[i] = INPUT_BLOCK_READ(input, input_offset + i * SUBGROUP_SIZE);
 #if ASYMMETRIC_QUANTIZATION
@@ -99,7 +111,6 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
         max_value = fmax(max_value, fabs(val[i]));
 #endif
     }
-#if !ASYMMETRIC_QUANTIZATION
     max_value = fmax(max_value, grp_max);
 #endif
 
@@ -115,9 +126,17 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     OUTPUT1_TYPE zp = (OUTPUT1_TYPE)(zp_tmp);
 
 #elif QUANTIZE_4BIT
-    // Symmetric 4-bit: scale = 7 / max_abs, range [-7, 7]
-    max_value = work_group_reduce_max(max_value);
-    OUTPUT1_TYPE scale = 7.0h / max_value;
+    // L2-norm + fixed 7/3 quantization (matches CPU TurboQuant exactly).
+    // L2_norm = sqrt(sum_sq) over sub-group; normalize, scale by sqrt(D), clip ±3, quant 7/3.
+    // dequant_scale = L2_norm * 3 / (7 * sqrt(D)) — stores inverse of encode scale.
+    float sum_sq_total = work_group_reduce_add(sum_sq);
+    float l2_norm = sqrt(sum_sq_total);
+    l2_norm = fmax(l2_norm, 1e-6f);
+    float inv_norm = 1.0f / l2_norm;
+    float sqrt_D = sqrt((float)INNERMOST_DIM_VALUE);
+    // scale_to_int = 7/3, applied after normalization+sqrt(D) scaling
+    // dequant_scale stored so SDPA can do: code * dequant_scale ≈ original_value
+    OUTPUT1_TYPE dequant_scale = convert_half(3.0f * l2_norm / (7.0f * sqrt_D));
 #else
     max_value = work_group_reduce_max(max_value);
     OUTPUT1_TYPE scale = 127.0h / max_value;
@@ -134,8 +153,11 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     const uint elem_offset = OUTPUT_GET_INDEX(b, f, y, x);
 
     unroll_for (uint i = 0; i < INNERMOST_DIM_VALUE / SUBGROUP_SIZE; i++) {
-        // Quantize to signed 4-bit range [-7, 7]
-        char q = clamp(convert_char_rte(val[i] * scale), (char)-7, (char)7);
+        // Exact CPU TQ encode: normalize → sqrt(D) → clip ±3 → 7/3
+        float v_norm = val_f32[i] * inv_norm;       // unit vector
+        float v_scaled = v_norm * sqrt_D;            // ~ N(0,1)
+        float v_clipped = clamp(v_scaled, -3.0f, 3.0f);
+        char q = clamp(convert_char_rte(v_clipped * (7.0f / 3.0f)), (char)-7, (char)7);
         // Exchange with neighbor (even<->odd) via subgroup shuffle
         char q_neighbor = intel_sub_group_shuffle(q, sglid ^ 1);
         if ((sglid & 1) == 0) {
@@ -177,6 +199,9 @@ KERNEL(dynamic_quantize_gpu_kv_cache)(
     #endif
 
 #endif
+#elif QUANTIZE_4BIT
+        // Store dequant scale directly (not 1/scale) — SDPA does: code * dequant_scale
+        output_scale[scale_idx] = dequant_scale;
 #else
         output_scale[scale_idx] = 1.0h / scale;
 #endif

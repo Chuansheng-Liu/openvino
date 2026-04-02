@@ -215,8 +215,7 @@ KVCacheCompressionMatcher::KVCacheCompressionMatcher(ov::element::Type compressi
             }
 
             // For i4: use sub-group quantization (group_size=128) to improve precision
-            // when head_dim is large (e.g., 256). This produces multiple scales per
-            // (batch, head, seq) tuple, enabling finer-grained quantization.
+            // when head_dim is large (e.g., 256). Each 128-element sub-group gets own scale.
             group_sizes[order[data_rank - 1]] = is_int4 ? 128 : UINT64_MAX;
 
             return group_sizes;
