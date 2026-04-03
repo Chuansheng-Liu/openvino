@@ -14,6 +14,7 @@
 #include "pooling_inst.h"
 #include "fully_connected_inst.h"
 #include "mvn_inst.h"
+#include "linear_attention_inst.h"
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
 #include "gemm_inst.h"
@@ -517,6 +518,17 @@ void reorder_inputs::run(program& p, reorder_factory& rf) {
     auto& lo = p.get_layout_optimizer();
 
     auto fmt_map = get_preferred_formats(p, lo);
+
+    // LinearAttention's snapshot output (port 2) is 5D (bfzyx) but the format map
+    // assigns a single 4D format (bfyx) per node. Set the per-output preferred format
+    // so get_target_output_format() returns bfzyx, avoiding unnecessary reorder insertion.
+    // LinearAttention output 2 (snapshot) is bfzyx but format map assigns bfyx.
+    // The LinearAttention OCL kernel already writes snapshot data in bfzyx memory layout.
+    for (auto& node_fmt : fmt_map) {
+        if (node_fmt.first->is_type<linear_attention>() && node_fmt.first->get_outputs_count() >= 3) {
+            node_fmt.first->set_preferred_output_fmt(2, format::bfzyx);
+        }
+    }
 
     GPU_DEBUG_LOG_PASS << "Preferred formats:" << std::endl;
     for (auto& node_fmt : fmt_map) {
