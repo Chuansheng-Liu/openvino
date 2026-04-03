@@ -274,7 +274,10 @@ event::ptr primitive_inst::set_output_memory(memory::ptr mem_new, bool check, si
     if (check)
         check_memory_compatibility(*mem_new, ol);
 
-    if (is_constant()) {
+    // For constant data nodes (weights etc.), copy data to new buffer to preserve it.
+    // For can_be_optimized nodes (passthrough reorders in output chains), just update
+    // the pointer — data will be written by the predecessor during next inference.
+    if (is_constant() && !can_be_optimized()) {
         ev = mem_new->copy_from(get_network().get_stream(), *_outputs[idx], false);
     } else {
         _outputs[idx] = mem_new;
