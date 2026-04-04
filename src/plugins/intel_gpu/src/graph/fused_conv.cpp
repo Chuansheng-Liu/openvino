@@ -35,12 +35,13 @@ std::vector<layout> fused_conv_inst::calc_output_layouts(fused_conv_node const& 
     }
     if (num_outputs >= 3) {
         // output[2]: per-step state snapshots [B, S, conv_dim, kernel_size]
-        const auto& in_ps = input_layout.get_partial_shape();  // [B, conv_dim, S]
+        // Input is [B, S, conv_dim] (BSC format), so S = in_ps[1].
+        const auto& in_ps = input_layout.get_partial_shape();  // [B, S, conv_dim]
         const auto& st_ps = state_layout.get_partial_shape();  // [B, conv_dim, kernel_size]
         ov::PartialShape snap_ps;
         if (in_ps.rank().is_static() && st_ps.rank().is_static() &&
             in_ps.rank().get_length() == 3 && st_ps.rank().get_length() == 3) {
-            auto snap_s = in_ps[2];
+            auto snap_s = in_ps[1];
             if (desc->snapshot_max_seq > 0) {
                 snap_s = desc->snapshot_max_seq;
             }
