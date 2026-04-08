@@ -14,6 +14,7 @@
 namespace ov::intel_gpu::ocl {
 struct MoEGemmRuntimeParams : public ImplRuntimeParams {
     int32_t num_actually_used_experts = 0;
+    size_t chunk_token_num = 0;  // 0 = use full token_num from input layout
 };
 
 struct MoEGemmBase : public KernelGenerator {
