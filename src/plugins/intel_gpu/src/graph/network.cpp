@@ -47,7 +47,6 @@
 #include <set>
 #include <utility>
 #include <map>
-#include <unordered_map>
 #include <functional>
 #include <fstream>
 
@@ -755,82 +754,6 @@ bool network::has_event(const primitive_id& id) const {
 void network::execute_impl(const std::vector<event::ptr>& events) {
     set_arguments();
 
-    // Build eager-release map: maps each primitive to the list of predecessor primitives
-    // whose outputs can be returned to the memory pool right after it executes.
-    //
-    // Returning a buffer to the pool (with 0 users) makes it eligible for aliasing by
-    // subsequent primitives that need a buffer of the same size — see memory_pool.cpp.
-    // GPU event dependencies guarantee that the next writer enqueues only after all
-    // previous readers have enqueued, so this is safe even for out-of-order queues.
-    //
-    // Effect for large-sequence LLM inference: all 30 fused_conv / linear_attn layers
-    // share a single physical buffer instead of each holding an independent copy,
-    // reducing peak activation memory by ~5 GB at 8K tokens.
-    std::unordered_map<const primitive_inst*, std::vector<const primitive_inst*>> _eager_release;
-    {
-        // Map each primitive to its position in execution order so we can
-        // determine which of two primitives executes later.
-        std::unordered_map<const primitive_inst*, size_t> exec_pos;
-        {
-            size_t p = 0;
-            for (const auto& inst_ptr : _exec_order)
-                exec_pos[inst_ptr.get()] = p++;
-        }
-
-        // last_consumer[P] = the last primitive in execution order that reads
-        // from P's output buffer (directly or transitively through in-place ops).
-        std::unordered_map<const primitive_inst*, const primitive_inst*> last_consumer;
-        for (const auto& inst_ptr : _exec_order) {
-            const primitive_inst* consumer = inst_ptr.get();
-            for (const auto& dep : inst_ptr->dependencies()) {
-                const primitive_inst* dep_inst = dep.first;
-                auto it = last_consumer.find(dep_inst);
-                if (it == last_consumer.end() ||
-                    exec_pos.at(consumer) > exec_pos.at(it->second)) {
-                    last_consumer[dep_inst] = consumer;
-                }
-            }
-        }
-
-        // Propagate last_consumer through can_be_optimized() (reshape/reinterpret)
-        // nodes whose output shares the same physical buffer as their input.
-        //
-        // Example:  fused_conv_i → [buffer A]
-        //           reshape_i    → [A' = reinterpret(A)]   (can_be_optimized=true)
-        //           add_i        → reads A', writes B
-        //
-        // The initial map gives last_consumer[fused_conv_i] = reshape_i, but A
-        // must stay live until add_i finishes.  Propagating through reshape_i
-        // corrects it to last_consumer[fused_conv_i] = add_i.
-        //
-        // Process in reverse execution order so that later in-place chains are
-        // propagated before earlier ones, enabling single-pass coverage for
-        // linear chains.  The outer loop repeats until the map stabilises.
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            for (auto rit = _exec_order.rbegin(); rit != _exec_order.rend(); ++rit) {
-                const primitive_inst* q = rit->get();
-                if (!q->can_be_optimized()) continue;
-                auto it_q = last_consumer.find(q);
-                if (it_q == last_consumer.end()) continue;
-                const primitive_inst* q_last = it_q->second;
-                for (const auto& dep : q->dependencies()) {
-                    const primitive_inst* p = dep.first;
-                    auto it_p = last_consumer.find(p);
-                    if (it_p == last_consumer.end() ||
-                        exec_pos.at(q_last) > exec_pos.at(it_p->second)) {
-                        last_consumer[p] = q_last;
-                        changed = true;
-                    }
-                }
-            }
-        }
-
-        for (const auto& kv : last_consumer)
-            _eager_release[kv.second].push_back(kv.first);
-    }
-
     // This extra flush command is needed for dynamic models in both cases of out_of_order / in_order operating mode
     // since it reduces `bubbles` number in pipeline and GPU's idle time by timely flushing new kernels to device.
     // The freqency of flushing (16) is selected empirically, see details in tickets 116365, 116287, 139931.
@@ -849,23 +772,6 @@ void network::execute_impl(const std::vector<event::ptr>& events) {
 
         inst->prepare_primitive();
         inst->execute();
-
-        // Eager release: return outputs of predecessors whose last consumer just ran.
-        auto release_it = _eager_release.find(inst.get());
-        if (release_it != _eager_release.end()) {
-            for (const auto* consumed : release_it->second) {
-                for (size_t i = 0; i < consumed->outputs_memory_count(); ++i) {
-                    auto out_mem = consumed->output_memory_ptr(i);
-                    if (out_mem && out_mem->from_memory_pool) {
-                        get_memory_pool().release_memory(
-                            out_mem.get(),
-                            consumed->get_node().get_unique_id(),
-                            consumed->id(),
-                            get_id());
-                    }
-                }
-            }
-        }
 
         executed_prims++;
         if (needs_flushing && executed_prims % flush_frequency == 0)
