@@ -116,8 +116,21 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
                         "Please try to reduce batch size or use lower precision.");
     }
 
-    auto used_mem = get_used_device_memory(allocation_type::usm_device) + get_used_device_memory(allocation_type::usm_host);
+    auto used_usm_device = get_used_device_memory(allocation_type::usm_device);
+    auto used_usm_host   = get_used_device_memory(allocation_type::usm_host);
+    auto used_cl_mem     = get_used_device_memory(allocation_type::cl_mem);
+    // Revert: do not include cl_mem in used_mem to restore pre-OOM-fix behavior
+    auto used_mem = used_usm_device + used_usm_host;
     auto exceed_available_mem_size = (layout.bytes_count() + used_mem > get_max_memory_size());
+    if (exceed_available_mem_size) {
+        std::cerr << "[GPU][MEM_BREAKDOWN] OOM: requesting=" << layout.bytes_count() / (1024.0*1024*1024) << " GB"
+                  << "  usm_device=" << used_usm_device / (1024.0*1024*1024) << " GB"
+                  << "  usm_host=" << used_usm_host / (1024.0*1024*1024) << " GB"
+                  << "  cl_mem=" << used_cl_mem / (1024.0*1024*1024) << " GB"
+                  << "  total=" << used_mem / (1024.0*1024*1024) << " GB"
+                  << "  available=" << get_max_memory_size() / (1024.0*1024*1024) << " GB"
+                  << std::endl;
+    }
 
     // When dynamic shape upper bound makes bigger buffer, then return false.
     if (exceed_available_mem_size && layout.is_dynamic()) {
@@ -144,6 +157,22 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
 
 memory::ptr ocl_engine::allocate_memory(const layout& layout, allocation_type type, bool reset) {
     OPENVINO_ASSERT(!layout.is_dynamic() || layout.has_upper_bound(), "[GPU] Can't allocate memory for dynamic layout");
+
+    // Log large allocations (≥ 256 MB) to trace memory growth
+    if (layout.bytes_count() >= 256ULL * 1024 * 1024) {
+        auto used_d = get_used_device_memory(allocation_type::usm_device);
+        auto used_h = get_used_device_memory(allocation_type::usm_host);
+        auto used_c = get_used_device_memory(allocation_type::cl_mem);
+        std::cerr << "[GPU][MEM_ALLOC] size=" << layout.bytes_count() / (1024.0*1024*1024) << " GB"
+                  << "  type=" << type
+                  << "  shape=" << layout.get_partial_shape()
+                  << "  format=" << layout.format
+                  << "  dtype=" << layout.data_type
+                  << "  usm_device=" << used_d / (1024.0*1024*1024) << " GB"
+                  << "  usm_host=" << used_h / (1024.0*1024*1024) << " GB"
+                  << "  total=" << (used_d + used_h + used_c) / (1024.0*1024*1024) << " GB"
+                  << std::endl;
+    }
 
     check_allocatable(layout, type);
 

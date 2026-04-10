@@ -185,6 +185,7 @@ bool SDPAOpt::supports_micro_sdpa(const RuntimeParams& params) {
     const auto& v_layout = params.get_input_layout(2);
     auto desc = params.typed_desc<scaled_dot_product_attention>();
 
+
     // Will check it later to decide whether support micro kernel
     // if (desc->indirect_axis != -1) {
     //     // Micro kernel does not support indirect axis

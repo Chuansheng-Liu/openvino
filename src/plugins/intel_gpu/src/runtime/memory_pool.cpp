@@ -541,4 +541,23 @@ void memory_pool::dump_to_screen(uint32_t net_id, uint32_t iter) {
     GPU_DEBUG_COUT << "************************************************************************" << std::endl;
 #endif
 }
+void memory_pool::sweep_zero_user_entries(uint32_t network_id) {
+    for (auto it = _non_padded_pool.begin(); it != _non_padded_pool.end(); ) {
+        if (it->second._network_id == network_id && it->second._users.empty())
+            it = _non_padded_pool.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = _padded_pool.begin(); it != _padded_pool.end(); ) {
+        auto& list = it->second;
+        list.remove_if([network_id](const memory_record& r) {
+            return r._network_id == network_id && r._users.empty();
+        });
+        if (list.empty())
+            it = _padded_pool.erase(it);
+        else
+            ++it;
+    }
+}
+
 }  // namespace cldnn

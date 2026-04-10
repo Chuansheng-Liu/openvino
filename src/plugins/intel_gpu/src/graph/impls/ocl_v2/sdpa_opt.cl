@@ -8,6 +8,10 @@
 #include "include/batch_headers/sub_group_block_write.cl"
 #include "include/batch_headers/sub_group_shuffle.cl"
 
+#if IS_CAUSAL
+#define CAUSAL_KV_OFFSET ((int)(SOURCE_SEQ_LEN) - (int)(TARGET_SEQ_LEN))
+#endif
+
 // query_input   [batch, heads_num, q_len, head_size]
 // key_input     [batch, kv_heads_num, kv_len, head_size]
 // value_input   [batch, kv_heads_num, kv_len, head_size]
@@ -432,7 +436,7 @@ KERNEL(sdpa_opt)(
 
                         // Apply attention mask
 #if IS_CAUSAL
-                        if (start_partition_idx + seq_len > target_seq_idx + seq_idx)
+                        if (start_partition_idx + seq_len > target_seq_idx + CAUSAL_KV_OFFSET + seq_idx)
                             qk_val[seq_idx] += INPUT0_VAL_MIN;
 #elif !IS_CAUSAL && HAS_ATTN_MASK_INPUT
                         const uint attn_mask_offset = INPUT3_GET_INDEX_SAFE(b0_idx, b1_idx, target_seq_idx + seq_idx, start_partition_idx + seq_len);
@@ -818,10 +822,10 @@ inline MASK_VECTOR_TYPE FUNC(load_attn_mask)(OPTIONAL_SHAPE_INFO_ARG
     } else {
         for (uint i = 0; i < SUBGROUP_SIZE; i++) {
 #if defined(IS_PAGED_ATTENTION) && SLIDING_WINDOW_SIZE != 0
-            if ((source_seq_idx + i > target_seq_idx) ||
-                (target_seq_idx >= SLIDING_WINDOW_SIZE && source_seq_idx + i < target_seq_idx - SLIDING_WINDOW_SIZE))
+            if ((source_seq_idx + i > target_seq_idx + CAUSAL_KV_OFFSET) ||
+                (target_seq_idx + CAUSAL_KV_OFFSET >= SLIDING_WINDOW_SIZE && source_seq_idx + i < target_seq_idx + CAUSAL_KV_OFFSET - SLIDING_WINDOW_SIZE))
 #else
-            if (source_seq_idx + i > target_seq_idx)
+            if (source_seq_idx + i > target_seq_idx + CAUSAL_KV_OFFSET)
 #endif
                 mask_vec[i] = NAN;
         }
@@ -1103,20 +1107,23 @@ KERNEL(sdpa_opt)(
     }
 
     // Q*K calculation loop
-    MAKE_VECTOR_TYPE(OUTPUT_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE) output_acc = OUTPUT_VAL_ZERO;
+    // Use f32 accumulator for cross-partition output to avoid f16 overflow on long sequences.
+    // The un-normalized accumulated output (global_exp_sum * weighted_avg(v)) can exceed f16 max (65504)
+    // when kv_len * avg_value_magnitude > 65504 (e.g., kv_len >= 16384 with avg_value ~4).
+    MAKE_VECTOR_TYPE(SOFTMAX_ACCUMULATOR_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE) output_acc = SOFTMAX_ACCUMULATOR_VAL_ZERO;
 
     __attribute__((opencl_unroll_hint(1)))
     for (uint start_partition_idx = 0; start_partition_idx < SOURCE_SEQ_LEN; start_partition_idx += SEQ_LEN_PARTITION_SIZE) {
         const uint seq_len = start_partition_idx + sgid * SUBGROUP_SIZE;
 #if IS_CAUSAL
-        const uint partition_seq_len = min((uint)SEQ_LEN_PARTITION_SIZE, (uint)max(0, (int)(target_seq_idx + seq_idx_end) - (int)start_partition_idx));
+        const uint partition_seq_len = min((uint)SEQ_LEN_PARTITION_SIZE, (uint)max(0, (int)(target_seq_idx + CAUSAL_KV_OFFSET + seq_idx_end) - (int)start_partition_idx));
 #else
         const uint partition_seq_len = min((uint)SOURCE_SEQ_LEN - start_partition_idx, (uint)SEQ_LEN_PARTITION_SIZE);
 #endif
 
         MAKE_VECTOR_TYPE(INPUT0_TYPE, TARGET_SEQ_LEN_BLOCK_SIZE) qk_acc = INPUT0_VAL_ZERO;
 #if IS_CAUSAL
-        if (seq_len <= target_seq_idx) { // keep tril i.e. m >= n
+        if (seq_len <= target_seq_idx + CAUSAL_KV_OFFSET) { // keep tril i.e. m >= n
 #endif
 #if IS_PAGED_ATTENTION
 #ifdef BROADCAST_GROUP_SIZE
@@ -1330,9 +1337,9 @@ KERNEL(sdpa_opt)(
 #if IS_CAUSAL
                     // casual mask: valid only if m >= n
 #if defined(IS_PAGED_ATTENTION) && SLIDING_WINDOW_SIZE != 0
-                    if ((seq_len + i <= target_seq_idx + sglid) && (target_seq_idx + sglid < SLIDING_WINDOW_SIZE || seq_len + i > target_seq_idx + sglid - SLIDING_WINDOW_SIZE)) {
+                    if ((seq_len + i <= target_seq_idx + CAUSAL_KV_OFFSET + sglid) && (target_seq_idx + CAUSAL_KV_OFFSET + sglid < SLIDING_WINDOW_SIZE || seq_len + i > target_seq_idx + CAUSAL_KV_OFFSET + sglid - SLIDING_WINDOW_SIZE)) {
 #else
-                    if (seq_len + i <= target_seq_idx + sglid) {
+                    if (seq_len + i <= target_seq_idx + CAUSAL_KV_OFFSET + sglid) {
 #endif
 #endif  // IS_CAUSAL
 #if !APPLY_SCALES_TO_QUERY
@@ -1493,9 +1500,9 @@ KERNEL(sdpa_opt)(
                 qk_acc[i] = native_exp(TO_SOFTMAX_ACCUMULATOR_TYPE(qk_acc[i]) - qk_max_new);
 #if IS_CAUSAL
 #if defined(IS_PAGED_ATTENTION) && SLIDING_WINDOW_SIZE != 0
-                if ((seq_len + i <= target_seq_idx + sglid) && (target_seq_idx + sglid < SLIDING_WINDOW_SIZE || seq_len + i >= target_seq_idx + sglid - SLIDING_WINDOW_SIZE)) {
+                if ((seq_len + i <= target_seq_idx + CAUSAL_KV_OFFSET + sglid) && (target_seq_idx + CAUSAL_KV_OFFSET + sglid < SLIDING_WINDOW_SIZE || seq_len + i >= target_seq_idx + CAUSAL_KV_OFFSET + sglid - SLIDING_WINDOW_SIZE)) {
 #else
-                if (seq_len + i <= target_seq_idx + sglid) {
+                if (seq_len + i <= target_seq_idx + CAUSAL_KV_OFFSET + sglid) {
 #endif
                     exp_sum_new += qk_acc[i];
                 }
@@ -1872,10 +1879,12 @@ KERNEL(sdpa_opt)(
 
                 for (uint seq_idx = 0; seq_idx < seq_idx_end; seq_idx++) {
                     if (start_partition_idx > 0) {
-                        OUTPUT_TYPE updated_prev_res = TO_SOFTMAX_ACCUMULATOR_TYPE(output_acc[seq_idx]) * slm_update_factor[seq_idx];
-                        acc_output_res[seq_idx] += updated_prev_res;
+                        // Accumulate in f32 to avoid f16 overflow on long sequences.
+                        output_acc[seq_idx] = output_acc[seq_idx] * slm_update_factor[seq_idx]
+                                            + TO_SOFTMAX_ACCUMULATOR_TYPE(acc_output_res[seq_idx]);
+                    } else {
+                        output_acc[seq_idx] = TO_SOFTMAX_ACCUMULATOR_TYPE(acc_output_res[seq_idx]);
                     }
-                    output_acc[seq_idx] = acc_output_res[seq_idx];
                 }
             }
 #else /*!IS_FLASHATTEN_V2*/
@@ -1915,7 +1924,7 @@ KERNEL(sdpa_opt)(
 
     if (sgid >= (SUBGROUPS_PER_WG / SG_SCALE_FACTOR)) {
         unroll_for (uint seq_idx = 0; seq_idx < TARGET_SEQ_LEN_BLOCK_SIZE; seq_idx++) {
-            slm_qk_vals[seq_idx][(uint)get_local_id(2)] = output_acc[seq_idx];
+            slm_qk_vals[seq_idx][(uint)get_local_id(2)] = TO_OUTPUT_TYPE(output_acc[seq_idx]);
         }
     }
 
@@ -1924,7 +1933,7 @@ KERNEL(sdpa_opt)(
     if (sgid < (SUBGROUPS_PER_WG / SG_SCALE_FACTOR)) {
         unroll_for (uint seq_idx = 0; seq_idx < TARGET_SEQ_LEN_BLOCK_SIZE; seq_idx++) {
             unroll_for (uint i = 1; i < SG_SCALE_FACTOR; i++) {
-                output_acc[seq_idx] += slm_qk_vals[seq_idx][(i * V_HEAD_SIZE) + head_size_idx];
+                output_acc[seq_idx] += TO_SOFTMAX_ACCUMULATOR_TYPE(slm_qk_vals[seq_idx][(i * V_HEAD_SIZE) + head_size_idx]);
             }
         }
 
@@ -1943,7 +1952,7 @@ KERNEL(sdpa_opt)(
 #if IS_FLASHATTEN_V2
                     output_acc[seq_idx] /= slm_exp_sum_prev[seq_idx];
 #endif
-                    OUTPUT_BLOCK_WRITE(output, output_offset, output_acc[seq_idx]);
+                    OUTPUT_BLOCK_WRITE(output, output_offset, TO_OUTPUT_TYPE(output_acc[seq_idx]));
                     output_offset += output_pitch;
                 }
             } else if (sglid < V_HEAD_SIZE_LEFTOVER) {
@@ -1951,7 +1960,7 @@ KERNEL(sdpa_opt)(
 #if IS_FLASHATTEN_V2
                     output_acc[seq_idx] /= slm_exp_sum_prev[seq_idx];
 #endif
-                    output[output_offset + sglid] = output_acc[seq_idx];
+                    output[output_offset + sglid] = TO_OUTPUT_TYPE(output_acc[seq_idx]);
                     output_offset += output_pitch;
                 }
             }
@@ -1961,7 +1970,7 @@ KERNEL(sdpa_opt)(
 #if IS_FLASHATTEN_V2
                     output_acc[seq_idx] /= slm_exp_sum_prev[seq_idx];
 #endif
-                    OUTPUT_BLOCK_WRITE(output, output_offset, output_acc[seq_idx]);
+                    OUTPUT_BLOCK_WRITE(output, output_offset, TO_OUTPUT_TYPE(output_acc[seq_idx]));
                     output_offset += output_pitch;
                 }
             } else if (sglid < V_HEAD_SIZE_LEFTOVER) {
@@ -1969,7 +1978,7 @@ KERNEL(sdpa_opt)(
 #if IS_FLASHATTEN_V2
                     output_acc[seq_idx] /= slm_exp_sum_prev[seq_idx];
 #endif
-                    output[output_offset + sglid] = output_acc[seq_idx];
+                    output[output_offset + sglid] = TO_OUTPUT_TYPE(output_acc[seq_idx]);
                     output_offset += output_pitch;
                 }
             }
@@ -1980,7 +1989,7 @@ KERNEL(sdpa_opt)(
 #if IS_FLASHATTEN_V2
                 output_acc[seq_idx] /= slm_exp_sum_prev[seq_idx];
 #endif
-                OUTPUT_BLOCK_WRITE(output, output_offset, output_acc[seq_idx]);
+                OUTPUT_BLOCK_WRITE(output, output_offset, TO_OUTPUT_TYPE(output_acc[seq_idx]));
                 output_offset += output_pitch;
             }
         } else {
@@ -1988,7 +1997,7 @@ KERNEL(sdpa_opt)(
 #if IS_FLASHATTEN_V2
                     output_acc[seq_idx] /= slm_exp_sum_prev[seq_idx];
 #endif
-                    OUTPUT_BLOCK_WRITE(output, output_offset, output_acc[seq_idx]);
+                    OUTPUT_BLOCK_WRITE(output, output_offset, TO_OUTPUT_TYPE(output_acc[seq_idx]));
                     output_offset += output_pitch;
                 }
         }
@@ -2025,7 +2034,9 @@ KERNEL(sdpa_opt)(
 // max_logits    [batch, heads_num, q_len, partition_idx]
 // tmp_out       [batch, heads_num, q_len, partition_idx, head_size]
 
-#define MAX_PARTITIONS_NUM 128
+// Support up to 256K context: ceil(262144 / 256) = 1024 partitions.
+// SLM cost: 1024 * sizeof(f32) = 4 KB (trivial for 32-64 KB SLM budgets).
+#define MAX_PARTITIONS_NUM 1024
 
 REQD_SUB_GROUP_SIZE(SUBGROUP_SIZE)
 KERNEL(sdpa_opt_finalization_stage)(
@@ -2100,7 +2111,7 @@ KERNEL(sdpa_opt_finalization_stage)(
                             target_seq_idx * (V_HEAD_SIZE) +
                             local_id;
 
-    output[out_offset] = TO_OUTPUT_TYPE(acc) / TO_OUTPUT_TYPE(global_exp_sum);
+    output[out_offset] = TO_OUTPUT_TYPE(acc / global_exp_sum);
 }
 
 #endif
