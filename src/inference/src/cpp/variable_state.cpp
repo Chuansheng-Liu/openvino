@@ -49,4 +49,21 @@ void VariableState::set_state(const Tensor& state) {
     OV_VARIABLE_CALL_STATEMENT(_impl->set_state(get_tensor_impl(state)));
 }
 
+Shape VariableState::get_shape() const {
+    OV_VARIABLE_CALL_STATEMENT(return _impl->get_shape());
+}
+
+void VariableState::set_shape(const Shape& shape) {
+    OPENVINO_ASSERT(_impl != nullptr, "VariableState was not initialized.");
+    try {
+        _impl->set_shape(shape);
+    } catch (const ov::NotImplemented&) {
+        throw;  // Preserve NotImplemented so callers can detect unsupported operation
+    } catch (const std::exception& ex) {
+        OPENVINO_THROW(ex.what());
+    } catch (...) {
+        OPENVINO_THROW("Unexpected exception");
+    }
+}
+
 }  // namespace ov

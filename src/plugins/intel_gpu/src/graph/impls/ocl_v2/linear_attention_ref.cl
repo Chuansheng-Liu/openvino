@@ -268,9 +268,13 @@ KERNEL(linear_attention_ref)
  __global INPUT3_TYPE* g,
  __global INPUT4_TYPE* beta,
  __global INPUT5_TYPE* initial_state,
+ __global INPUT6_TYPE* state_update_mode,
  __global OUTPUT_TYPE* output,
 #if OUTPUT_STATE
  __global OUTPUT1_TYPE* output_state,
+#endif
+#if OUTPUT_SNAPSHOTS
+ __global OUTPUT2_TYPE* state_snapshots,
 #endif
  int seq_len,
  int key_offset,
@@ -316,6 +320,35 @@ KERNEL(linear_attention_ref)
     float b_q[CEIL_DIV(K_HEAD_DIMS, SUBGROUP_SIZE)] = {0};
 #endif
     int id_sg_local = get_sub_group_local_id();
+    const int mode = convert_int(state_update_mode[0]);
+
+#if OUTPUT_SNAPSHOTS
+#ifndef SNAP_SEQ_LEN
+#define SNAP_SEQ_LEN seq_len
+#endif
+    // Snapshot commit-by-index: mode < 0 means commit snapshot[(-mode)-1]
+    // to the variable state before loading.  The snapshot buffer uses the
+    // same dtype (INPUT5_TYPE) and per-head layout as the variable state.
+    if (mode < 0) {
+        const int commit_idx = (-mode) - 1;
+        __global INPUT5_TYPE* state_dst = initial_state;
+    #if OUTPUT_STATE
+        state_dst = (__global INPUT5_TYPE*)output_state;
+    #endif
+        __global INPUT5_TYPE* snap_ptr = (__global INPUT5_TYPE*)state_snapshots;
+        const int SNAP_HEAD_STRIDE = K_HEAD_DIMS * K_HEAD_DIMS;
+        const int SNAP_STEP_STRIDE = V_HEAD_NUMS * SNAP_HEAD_STRIDE;
+        const int SNAP_BATCH_STRIDE = SNAP_SEQ_LEN * SNAP_STEP_STRIDE;
+        for (int iv = 0; iv < V_BLOCK_SIZE; iv++) {
+            int i_v = i_v_base + iv;
+            int snap_base = b * SNAP_BATCH_STRIDE + commit_idx * SNAP_STEP_STRIDE + h * SNAP_HEAD_STRIDE + i_v * K_HEAD_DIMS;
+            int state_base = b * V_HEAD_NUMS * K_HEAD_DIMS * K_HEAD_DIMS + h * K_HEAD_DIMS * K_HEAD_DIMS + i_v * K_HEAD_DIMS;
+            for (int j = id_sg_local; j < K_HEAD_DIMS; j += SUBGROUP_SIZE) {
+                state_dst[state_base + j] = snap_ptr[snap_base + j];
+            }
+        }
+    }
+#endif
 
     // load initial state
     for (int iv = 0; iv < V_BLOCK_SIZE; iv++) {
@@ -533,29 +566,63 @@ KERNEL(linear_attention_ref)
             }
 #endif
         }
+#if OUTPUT_SNAPSHOTS
+        // Write per-step state snapshot only during verify (mode <= 0).
+        // Prefill (mode > 0) skips snapshot writes to avoid O(prompt_len) GPU memory.
+        if (mode <= 0) {
+            __global INPUT5_TYPE* snap_ptr = (__global INPUT5_TYPE*)state_snapshots;
+            const int SNAP_HEAD_STRIDE = K_HEAD_DIMS * K_HEAD_DIMS;
+            const int SNAP_STEP_STRIDE = V_HEAD_NUMS * SNAP_HEAD_STRIDE;
+            const int SNAP_BATCH_STRIDE = SNAP_SEQ_LEN * SNAP_STEP_STRIDE;
+            for (int iv = 0; iv < V_BLOCK_SIZE; iv++) {
+                int i_v = i_v_base + iv;
+                int snap_base = b * SNAP_BATCH_STRIDE + i * SNAP_STEP_STRIDE + h * SNAP_HEAD_STRIDE + i_v * K_HEAD_DIMS;
+#if (K_HEAD_DIMS == 128)
+#    if (SUBGROUP_SIZE == 8)
+                store_init_state_128_sg8(init_state[iv], snap_ptr, snap_base);
+#    else
+                store_init_state_128(&init_state[iv], snap_ptr, snap_base);
+#    endif
+#elif (K_HEAD_DIMS % 32) == 0
+#    if (SUBGROUP_SIZE == 16)
+                store_init_state_32_sg16(init_state[iv], snap_ptr, snap_base, id_sg_local);
+#    else
+                store_init_state_32(init_state[iv], snap_ptr, snap_base, id_sg_local);
+#    endif
+#else
+                store_init_state_generic(init_state[iv], snap_ptr, snap_base, id_sg_local);
+#endif
+            }
+        }
+#endif
     }
-        // store final state
+
+    // Write back state only when mode > 0 (normal commit).
+    //    mode == 0: no commit (deferred verify)
+    //    mode <  0: snapshot was committed above; current step is also deferred
+    if (mode > 0) {
         __global INPUT5_TYPE* state_out = initial_state;
     #if OUTPUT_STATE
         state_out = (__global INPUT5_TYPE*)output_state;
     #endif
-    for (int iv = 0; iv < V_BLOCK_SIZE; iv++) {
-        int i_v = i_v_base + iv;
-        int init_base = b * V_HEAD_NUMS * K_HEAD_DIMS * K_HEAD_DIMS + h * K_HEAD_DIMS * K_HEAD_DIMS + i_v * K_HEAD_DIMS;
+        for (int iv = 0; iv < V_BLOCK_SIZE; iv++) {
+            int i_v = i_v_base + iv;
+            int init_base = b * V_HEAD_NUMS * K_HEAD_DIMS * K_HEAD_DIMS + h * K_HEAD_DIMS * K_HEAD_DIMS + i_v * K_HEAD_DIMS;
 #if (K_HEAD_DIMS == 128)
 #    if (SUBGROUP_SIZE == 8)
-        store_init_state_128_sg8(init_state[iv], state_out, init_base);
+            store_init_state_128_sg8(init_state[iv], state_out, init_base);
 #    else
-        store_init_state_128(&init_state[iv], state_out, init_base);
+            store_init_state_128(&init_state[iv], state_out, init_base);
 #    endif
 #elif (K_HEAD_DIMS % 32) == 0
 #    if (SUBGROUP_SIZE == 16)
-        store_init_state_32_sg16(init_state[iv], state_out, init_base, id_sg_local);
+            store_init_state_32_sg16(init_state[iv], state_out, init_base, id_sg_local);
 #    else
-        store_init_state_32(init_state[iv], state_out, init_base, id_sg_local);
+            store_init_state_32(init_state[iv], state_out, init_base, id_sg_local);
 #    endif
 #else
-        store_init_state_generic(init_state[iv], state_out, init_base, id_sg_local);
+            store_init_state_generic(init_state[iv], state_out, init_base, id_sg_local);
 #endif
+        }
     }
 }

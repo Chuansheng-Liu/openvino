@@ -257,6 +257,11 @@ void SyncInferRequest::enqueue() {
         size_t port_idx = it.first;
         const auto& port = it.second;
 
+        // Skip prepare_output for snapshot outputs that are never read externally.
+        // This avoids set_output_memory → output chain copies (HtoH memcpy).
+        if (m_skip_output_copy_indices.count(port_idx))
+            continue;
+
         auto events = prepare_output(port_idx, port, m_user_outputs.at(port_idx));
         std::move(events.begin(), events.end(), std::back_inserter(dependencies));
     }
@@ -333,6 +338,11 @@ void SyncInferRequest::wait() {
     for (const auto& it : m_output_ports_map) {
         size_t port_idx = it.first;
         const auto& port = it.second;
+
+        // Skip snapshot outputs — no external consumer, no copy needed.
+        if (m_skip_output_copy_indices.count(port_idx))
+            continue;
+
         cldnn::primitive_id internal_name = m_output_names_map.at(port_idx);
 
         auto sync_start = std::chrono::high_resolution_clock::now();
@@ -973,6 +983,15 @@ void SyncInferRequest::init_mappings() {
     for (size_t output_idx = 0; output_idx < outputs.size(); ++output_idx) {
         m_output_ports_map[output_idx] = outputs[output_idx];
         m_output_names_map[output_idx] = m_graph->out_port_index_to_internal(output_idx);
+
+        // Mark snapshot outputs to skip output copy — they are internal state snapshots
+        // managed by deferred_state_commit and are never read by the host application.
+        for (const auto& name : outputs[output_idx].get_names()) {
+            if (name.find("snapshot.") == 0) {
+                m_skip_output_copy_indices.insert(output_idx);
+                break;
+            }
+        }
     }
 }
 

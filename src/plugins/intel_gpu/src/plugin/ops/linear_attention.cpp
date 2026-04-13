@@ -19,7 +19,7 @@ using LinearAttention = ov::op::LinearAttention;
 namespace ov::intel_gpu {
 
 static void CreateLinearAttentionOp(ProgramBuilder& p, const std::shared_ptr<ov::op::LinearAttention>& op) {
-    validate_inputs_count(op, {6});
+    validate_inputs_count(op, {7});
 
     auto inputs = p.GetInputInfo(op);
 
@@ -28,10 +28,12 @@ static void CreateLinearAttentionOp(ProgramBuilder& p, const std::shared_ptr<ov:
     if (op->get_variable()) {
         cldnn::linear_attention linear_attention_prim(layerName, inputs, op->get_variable()->get_info());
         linear_attention_prim.num_outputs = op->get_output_size();
+        linear_attention_prim.snapshot_max_seq = op->get_snapshot_max_seq();
         p.add_primitive(*op, linear_attention_prim);
     } else {
         cldnn::linear_attention linear_attention_prim(layerName, inputs);
         linear_attention_prim.num_outputs = op->get_output_size();
+        linear_attention_prim.snapshot_max_seq = op->get_snapshot_max_seq();
         p.add_primitive(*op, linear_attention_prim);
     }
 }

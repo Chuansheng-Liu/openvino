@@ -233,10 +233,24 @@ void convert_and_copy(const ov::ITensor* src, cldnn::memory::ptr dst, cldnn::str
         if (auto remote = dynamic_cast<const ov::intel_gpu::RemoteTensorImpl*>(src)) {
             auto mem = remote->get_original_memory();
             dst->copy_from(stream, *mem, blocking);
+            return;
         } else {
             dst->copy_from(stream, src->data(), blocking);
             return;
         }
+    }
+
+    // For RemoteTensors that need dtype conversion: read GPU data to host first,
+    // then convert and copy back (RemoteTensor has no host-accessible data()).
+    if (auto remote = dynamic_cast<const ov::intel_gpu::RemoteTensorImpl*>(src)) {
+        auto mem = remote->get_original_memory();
+        ov::Tensor host_src(src_et, src->get_shape());
+        mem->copy_to(stream, host_src.data(), blocking);
+        size_t size = ov::shape_size(src->get_shape());
+        ov::Tensor tmp_tensor(dst_et, src->get_shape());
+        ::convert_and_copy(host_src.data(), src_et, tmp_tensor.data(), dst_et, size, src_layout, transpose);
+        dst->copy_from(stream, tmp_tensor.data(), blocking);
+        return;
     }
 
     size_t size = ov::shape_size(src->get_shape());

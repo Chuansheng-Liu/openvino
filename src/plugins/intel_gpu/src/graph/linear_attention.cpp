@@ -21,9 +21,9 @@ std::vector<layout> linear_attention_inst::calc_output_layouts(linear_attention_
     const auto& desc = impl_param.typed_desc<linear_attention>();
     const auto& all_inputs = node.get_input_layouts();
     const auto num_outputs = desc->output_size();
-    if (all_inputs.size() != 6)
-        OPENVINO_THROW("linear_attention's must have 6 inputs");
-    // query, key, value, g, beta, initial_states
+    if (all_inputs.size() != 7)
+        OPENVINO_THROW("linear_attention must have 7 inputs");
+    // query, key, value, g, beta, initial_states, state_update_mode
     auto query_layout = impl_param.get_input_layout(0);
     auto value_layout = impl_param.get_input_layout(2);
     auto out_ps = value_layout.get_partial_shape();
@@ -34,8 +34,25 @@ std::vector<layout> linear_attention_inst::calc_output_layouts(linear_attention_
     }
     std::vector<layout> output_layouts;
     output_layouts.emplace_back(out_ps, value_layout.data_type, value_layout.format);
-    if (num_outputs == 2) {
+    if (num_outputs >= 2) {
         output_layouts.push_back(impl_param.get_input_layout(5));
+    }
+    if (num_outputs >= 3) {
+        // output[2]: per-step state snapshots [B, S, num_v_heads, head_k_dim, head_v_dim]
+        auto initial_states_layout = impl_param.get_input_layout(5);
+        const auto& h_ps = initial_states_layout.get_partial_shape();
+        ov::PartialShape snap_ps;
+        if (q_ps.rank().is_static() && h_ps.rank().is_static() &&
+            q_ps.rank().get_length() == 4 && h_ps.rank().get_length() == 4) {
+            auto snap_s = q_ps[1];
+            if (desc->snapshot_max_seq > 0) {
+                snap_s = desc->snapshot_max_seq;
+            }
+            snap_ps = {q_ps[0], snap_s, h_ps[1], h_ps[2], h_ps[3]};
+        } else {
+            snap_ps = ov::PartialShape::dynamic(5);
+        }
+        output_layouts.emplace_back(snap_ps, initial_states_layout.data_type, format::bfzyx);
     }
     return output_layouts;
 }

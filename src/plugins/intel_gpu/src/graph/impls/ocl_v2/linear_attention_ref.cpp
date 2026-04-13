@@ -54,6 +54,15 @@ protected:
         jit.make("SCALE_FACTOR", scale_factor);
         jit.make("OUTPUT_STATE", output_state);
 
+        const auto output_snapshots = params.output_layouts.size() > 2 ? 1 : 0;
+        jit.make("OUTPUT_SNAPSHOTS", output_snapshots);
+        if (output_snapshots) {
+            const auto& snap_shape = params.output_layouts[2].get_partial_shape();
+            if (snap_shape.rank().is_static() && snap_shape[1].is_static()) {
+                jit.make("SNAP_SEQ_LEN", snap_shape[1].get_length());
+            }
+        }
+
         return jit;
     }
 

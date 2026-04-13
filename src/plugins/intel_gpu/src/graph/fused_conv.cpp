@@ -20,8 +20,8 @@ template<typename ShapeType>
 std::vector<layout> fused_conv_inst::calc_output_layouts(fused_conv_node const& node, const kernel_impl_params& impl_param) {
     const auto& desc = impl_param.typed_desc<fused_conv>();
     const auto num_outputs = desc->output_size();
-    if (impl_param.input_layouts.size() != 4)
-        OPENVINO_THROW("fused_conv must have 4 inputs");
+    if (impl_param.input_layouts.size() != 5)
+        OPENVINO_THROW("fused_conv must have 5 inputs");
 
     // input[0]: [B, conv_dim, S] -> output[0]: [B, conv_dim, S]
     auto input_layout = impl_param.get_input_layout(0);
@@ -30,8 +30,26 @@ std::vector<layout> fused_conv_inst::calc_output_layouts(fused_conv_node const& 
 
     std::vector<layout> output_layouts;
     output_layouts.emplace_back(input_layout.get_partial_shape(), input_layout.data_type, input_layout.format);
-    if (num_outputs == 2) {
+    if (num_outputs >= 2) {
         output_layouts.push_back(state_layout);
+    }
+    if (num_outputs >= 3) {
+        // output[2]: per-step state snapshots [B, S, conv_dim, kernel_size]
+        // Input is [B, S, conv_dim] (BSC format), so S = in_ps[1].
+        const auto& in_ps = input_layout.get_partial_shape();  // [B, S, conv_dim]
+        const auto& st_ps = state_layout.get_partial_shape();  // [B, conv_dim, kernel_size]
+        ov::PartialShape snap_ps;
+        if (in_ps.rank().is_static() && st_ps.rank().is_static() &&
+            in_ps.rank().get_length() == 3 && st_ps.rank().get_length() == 3) {
+            auto snap_s = in_ps[1];
+            if (desc->snapshot_max_seq > 0) {
+                snap_s = desc->snapshot_max_seq;
+            }
+            snap_ps = {in_ps[0], snap_s, st_ps[1], st_ps[2]};
+        } else {
+            snap_ps = ov::PartialShape::dynamic(4);
+        }
+        output_layouts.emplace_back(snap_ps, state_layout.data_type, state_layout.format);
     }
     return output_layouts;
 }

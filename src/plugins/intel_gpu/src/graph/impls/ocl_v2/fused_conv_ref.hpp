@@ -34,8 +34,8 @@ struct FusedConvRef : public ImplementationManager {
         for (size_t i = 0; i < node.get_dependencies().size(); i++) {
             const auto& in_layout = node.get_input_layout(i);
             if (!one_of(in_layout.format, supported_fmts) || !one_of(in_layout.data_type, supported_types)) {
-                // beam_idx (input 2) can be i32/i64
-                if (i == 2)
+                // beam_idx (input 2) and state_update_mode (input 4) can be i32/i64
+                if (i == 2 || i == 4)
                     continue;
                 return false;
             }
