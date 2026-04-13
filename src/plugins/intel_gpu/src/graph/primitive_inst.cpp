@@ -274,7 +274,10 @@ event::ptr primitive_inst::set_output_memory(memory::ptr mem_new, bool check, si
     if (check)
         check_memory_compatibility(*mem_new, ol);
 
-    if (is_constant()) {
+    // For constant data nodes (weights etc.), copy data to new buffer to preserve it.
+    // For can_be_optimized nodes (passthrough reorders in output chains), just update
+    // the pointer — data will be written by the predecessor during next inference.
+    if (is_constant() && !can_be_optimized()) {
         ev = mem_new->copy_from(get_network().get_stream(), *_outputs[idx], false);
     } else {
         _outputs[idx] = mem_new;
@@ -2103,7 +2106,7 @@ void primitive_inst::prepare_primitive() {
     bool need_args_update = get_flag(ExecutionFlags::IMPL_CHANGED) || get_flag(ExecutionFlags::MEMORY_CHANGED);
 
     // Output buffer may be changed under the following conditions, so we need to set args to kernel on each iteration
-    if ((is_dynamic() && need_args_update) || has_mutable_input() || is_output() || has_dynamic_dependencies_insts(this) || _use_shared_kernels) {
+    if (_use_shared_kernels || (is_dynamic() && need_args_update) || has_mutable_input() || is_output() || has_dynamic_dependencies_insts(this)) {
         // For ocl_v2 impls we call set args based in flag in the execute() impl, so need to update the flag here
         set_flag(ExecutionFlags::ARG_UPDATE_REQUIRED);
         set_arguments();
