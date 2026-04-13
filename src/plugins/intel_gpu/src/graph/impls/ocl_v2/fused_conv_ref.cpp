@@ -21,7 +21,8 @@ protected:
         const auto& input_shape = params.get_input_layout(0).get_partial_shape();
         const auto& weight_shape = params.get_input_layout(1).get_partial_shape();
 
-        const size_t conv_dim = input_shape[1].get_length();
+        // Input is [B, S, CONV_DIM] (channel-last / BSC format)
+        const size_t conv_dim = input_shape[2].get_length();
         const size_t kernel_size = weight_shape[1].get_length();
         const auto io_type = params.get_input_layout(0).data_type == data_types::f16 ? 0 : 1;
 
@@ -63,9 +64,10 @@ protected:
             auto& wgs = kd.params.workGroups;
 
             const auto& input_shape = params.get_input_layout(0).get_partial_shape();
+            // Input is [B, S, CONV_DIM] (channel-last / BSC format)
             const size_t batch = input_shape[0].get_length();
-            const size_t conv_dim = input_shape[1].get_length();
-            const size_t seq_len = input_shape[2].get_length();
+            const size_t seq_len = input_shape[1].get_length();
+            const size_t conv_dim = input_shape[2].get_length();
 
             // Each work-item handles one (batch, channel) pair
             wgs.global = {batch, conv_dim, 1};

@@ -57,7 +57,7 @@ void FusedConv::validate_and_infer_types() {
                           get_input_size());
     OPENVINO_ASSERT(m_variable, "Variable is not initialized.");
 
-    // input[0]: [B, conv_dim, S]
+    // input[0]: [B, S, conv_dim] (BSC format)
     const auto& input_rank = get_input_partial_shape(0).rank();
     NODE_VALIDATION_CHECK(this,
                           input_rank.is_dynamic() || input_rank.get_length() == 3,
@@ -115,19 +115,20 @@ void FusedConv::validate_and_infer_types() {
                     " initial_state type: ",
                     initial_type);
 
-    // output[0]: same shape as input[0] = [B, conv_dim, S]
+    // output[0]: same shape as input[0] = [B, S, conv_dim]
     set_output_type(0, get_input_element_type(0), get_input_partial_shape(0));
     // output[1]: same shape as input[3] = [B, conv_dim, kernel_size]
     set_output_type(1, variable_type, variable_shape);
 
     if (m_output_snapshots) {
         // output[2]: per-step state snapshots [B, S, conv_dim, kernel_size]
+        // Input is [B, S, conv_dim] (BSC format), so S = in_ps[1].
         // Cap S at snapshot_max_seq to prevent huge allocation during prefill.
-        const auto& in_ps = get_input_partial_shape(0);  // [B, conv_dim, S]
+        const auto& in_ps = get_input_partial_shape(0);  // [B, S, conv_dim]
         ov::PartialShape snap_ps;
         if (in_ps.rank().is_static() && initial_shape.rank().is_static() &&
             in_ps.rank().get_length() == 3 && initial_shape.rank().get_length() == 3) {
-            auto snap_s = in_ps[2];
+            auto snap_s = in_ps[1];
             if (m_snapshot_max_seq > 0) {
                 snap_s = m_snapshot_max_seq;
             }

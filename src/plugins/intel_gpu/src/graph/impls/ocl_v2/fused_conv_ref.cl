@@ -4,13 +4,13 @@
 // FusedConv kernel: fuses Gather(beam_idx) + Concat + DepthwiseConv1D + SiLU + Slice
 //
 // Inputs:
-//   INPUT0 (input):       [B, CONV_DIM, S]
+//   INPUT0 (input):       [B, S, CONV_DIM]   (channel-last / BSC format)
 //   INPUT1 (conv_weight): [CONV_DIM, KERNEL_SIZE]
 //   INPUT2 (beam_idx):    [B]
 //   INPUT3 (state_in):    [B, CONV_DIM, KERNEL_SIZE]
 //
 // Outputs:
-//   OUTPUT  (output):     [B, CONV_DIM, S]
+//   OUTPUT  (output):     [B, S, CONV_DIM]   (channel-last / BSC format)
 //   OUTPUT1 (state_out):  [B, CONV_DIM, KERNEL_SIZE]
 //
 // Dispatch: global = {batch, conv_dim, 1}, local = {1, WG_SIZE, 1}
@@ -69,9 +69,11 @@ KERNEL(fused_conv_ref)(
         w[k] = convert_float(conv_weight[w_base + k]);
 
     // 4. For each sequence position: depthwise conv + SiLU
-    const int io_base = b * CONV_DIM * seq_len + ch * seq_len;
+    // Input/output in [B, S, CONV_DIM] format (channel-last).
+    const int batch_offset = b * seq_len * CONV_DIM;
     for (int s = 0; s < seq_len; s++) {
-        float x_new = convert_float(input[io_base + s]);
+        const int bsc_idx = batch_offset + s * CONV_DIM + ch;
+        float x_new = convert_float(input[bsc_idx]);
 
         // Conv window = [state[1], state[2], ..., state[K-1], x_new]
         // This corresponds to concatenating state with input and applying valid conv
@@ -82,7 +84,7 @@ KERNEL(fused_conv_ref)(
 
         // SiLU activation: x * sigmoid(x)
         float sig = native_recip(1.0f + native_exp(-acc));
-        output[io_base + s] = TO_OUTPUT_TYPE(acc * sig);
+        output[bsc_idx] = TO_OUTPUT_TYPE(acc * sig);
 
         // Shift state left, append new input
         for (int k = 0; k < KERNEL_SIZE - 1; k++)
