@@ -89,6 +89,11 @@ private:
     bool m_enable_profiling = false;
     bool m_use_external_queue = false;
 
+    // Indices of outputs that don't need data copied back to host user tensors.
+    // Populated during init_mappings() for outputs whose name starts with "snapshot."
+    // (internal state snapshots managed by deferred_state_commit, never read externally).
+    std::unordered_set<size_t> m_skip_output_copy_indices;
+
     void prepare_state(const std::string& name, const std::shared_ptr<VariableStateBase>& variable);
     std::vector<cldnn::event::ptr> prepare_input(const std::string& internal_name,
                                                  size_t input_idx,
