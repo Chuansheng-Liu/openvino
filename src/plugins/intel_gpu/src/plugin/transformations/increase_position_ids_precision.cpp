@@ -331,6 +331,53 @@ IncreasePositionIdsPrecisionForGPTOSS::IncreasePositionIdsPrecisionForGPTOSS() {
 }
 
 
+IncreasePositionIdsPrecisionForModelingRoPE::IncreasePositionIdsPrecisionForModelingRoPE() {
+    using namespace ov::pass::pattern;
+
+    // The modeling API marks the position-ID → freq → cos/sin subgraph with
+    // disable_fp16_compression so ConvertPrecision keeps it in f32 (position IDs
+    // can reach 65536+ which overflows f16 max ~65504).  However, the RoPE GPU
+    // kernel drops vec_size from 16 to 1 when cos/sin inputs are f32 while the
+    // main input (x) is f16.  Since cos/sin values are always in [-1, 1], they
+    // are perfectly representable in f16.  Insert Convert(f32→f16) at RoPE's
+    // cos/sin inputs to restore full vectorization without losing accuracy.
+    // This works for both standard rope_cos_sin and mRoPE topologies.
+    auto rope = wrap_type<ov::op::internal::RoPE>({any_input(), any_input(), any_input()});
+
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](ov::pass::pattern::Matcher& m) {
+        const auto& pattern_map = m.get_pattern_value_map();
+        auto rope_node = ov::as_type_ptr<ov::op::internal::RoPE>(
+            pattern_map.at(rope).get_node_shared_ptr());
+        if (!rope_node || transformation_callback(rope_node))
+            return false;
+
+        const auto input_et = rope_node->get_input_element_type(0);  // main tensor (x), typically f16
+        // Only act when cos/sin are higher precision than the main input
+        if (rope_node->get_input_element_type(1) == input_et &&
+            rope_node->get_input_element_type(2) == input_et)
+            return false;
+
+        bool changed = false;
+        for (size_t idx : {size_t(1), size_t(2)}) {  // input 1 = cos, input 2 = sin
+            if (rope_node->get_input_element_type(idx) != input_et) {
+                auto convert = std::make_shared<ov::op::v0::Convert>(
+                    rope_node->input_value(idx), input_et);
+                convert->set_friendly_name(
+                    rope_node->input_value(idx).get_node()->get_friendly_name() +
+                    "_downcast_for_rope");
+                ov::copy_runtime_info(rope_node, convert);
+                rope_node->input(idx).replace_source_output(convert->output(0));
+                changed = true;
+            }
+        }
+        return changed;
+    };
+
+    auto m = std::make_shared<ov::pass::pattern::Matcher>(
+        rope, "IncreasePositionIdsPrecisionForModelingRoPE");
+    this->register_matcher(m, callback);
+}
+
 IncreasePositionIdsPrecision::IncreasePositionIdsPrecision() {}
 
 bool IncreasePositionIdsPrecision::run_on_model(const std::shared_ptr<ov::Model>& model) {
@@ -340,6 +387,7 @@ bool IncreasePositionIdsPrecision::run_on_model(const std::shared_ptr<ov::Model>
     symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForQwen25VL>();
     symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForLtxVideo>();
     symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForGPTOSS>();
+    symbolic_ctx_manager->register_pass<IncreasePositionIdsPrecisionForModelingRoPE>();
     return symbolic_optimizations.run_on_model(model);
 }
 

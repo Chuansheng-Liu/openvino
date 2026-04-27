@@ -118,15 +118,12 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
 
     auto used_usm_device = get_used_device_memory(allocation_type::usm_device);
     auto used_usm_host   = get_used_device_memory(allocation_type::usm_host);
-    auto used_cl_mem     = get_used_device_memory(allocation_type::cl_mem);
-    // Revert: do not include cl_mem in used_mem to restore pre-OOM-fix behavior
     auto used_mem = used_usm_device + used_usm_host;
     auto exceed_available_mem_size = (layout.bytes_count() + used_mem > get_max_memory_size());
     if (exceed_available_mem_size) {
         std::cerr << "[GPU][MEM_BREAKDOWN] OOM: requesting=" << layout.bytes_count() / (1024.0*1024*1024) << " GB"
                   << "  usm_device=" << used_usm_device / (1024.0*1024*1024) << " GB"
                   << "  usm_host=" << used_usm_host / (1024.0*1024*1024) << " GB"
-                  << "  cl_mem=" << used_cl_mem / (1024.0*1024*1024) << " GB"
                   << "  total=" << used_mem / (1024.0*1024*1024) << " GB"
                   << "  available=" << get_max_memory_size() / (1024.0*1024*1024) << " GB"
                   << std::endl;

@@ -327,6 +327,10 @@ DispatchDataFunc MoE3GemmMicroGenerator::get_dispatch_data_func() const {
         auto cur_moe = params.typed_desc<moe_3gemm_fused_compressed>();
         const auto& config = cur_moe->_config;
         n = n * config.top_k;
+        // Override with chunk_token_num for chunked MoE processing
+        if (rtp && rtp->chunk_token_num > 0) {
+            n = rtp->chunk_token_num * config.top_k;
+        }
         GPU_DEBUG_TRACE_DETAIL << "\t n = " << n << std::endl;
 
         const auto& experts_weight_shape = experts_weight_layout.get_shape();
