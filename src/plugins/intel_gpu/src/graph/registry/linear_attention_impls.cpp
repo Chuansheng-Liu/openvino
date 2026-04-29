@@ -12,6 +12,7 @@
 #if OV_GPU_WITH_OCL
     #include "impls/ocl_v2/linear_attention_ref.hpp"
     #include "impls/ocl_v2/linear_attention_chunk.hpp"
+    #include "impls/ocl_v2/linear_attention_opt.hpp"
 #endif
 namespace ov::intel_gpu {
 
@@ -23,6 +24,7 @@ const std::vector<std::shared_ptr<cldnn::ImplementationManager>>& Registry<linea
 //        OV_GPU_CREATE_INSTANCE_CM(cm::LinearAttentionOptImplementationManager, shape_types::any)
 //#endif
 #if OV_GPU_WITH_OCL
+    OV_GPU_CREATE_INSTANCE_OCL(ocl::LinearAttentionOpt, shape_types::any)
     OV_GPU_CREATE_INSTANCE_OCL(ocl::LinearAttentionChunk, shape_types::any)
     OV_GPU_CREATE_INSTANCE_OCL(ocl::LinearAttentionRef, shape_types::any)
 #endif
