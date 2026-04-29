@@ -1658,6 +1658,18 @@ public:
         expert_mask_cpu expert_mask;
         get_expert_mask_from_gpu(config, topk_id_mem, stream, expert_mask);
 
+        // Pre-copy all expert masks to GPU asynchronously to eliminate per-expert HtoD sync overhead.
+        // Original: ~1500 blocking HtoD copies (~440ms). Now: async copies + one sync.
+        for (size_t eno = 0; eno < config.num_expert; eno++) {
+            if (eno >= expert_mask.pred_flag.size() || !expert_mask.pred_flag[eno])
+                continue;
+            expert_mask_gpu& emask = scratch.expert_masks[eno];
+            auto sz = expert_mask.batch[eno].size() * sizeof(int);
+            emask.batch->copy_from(stream, expert_mask.batch[eno].data(), 0, 0, sz, false);
+            emask.topk->copy_from(stream, expert_mask.topk[eno].data(), 0, 0, sz, false);
+        }
+        stream.finish();
+
         for (size_t expert_no = 0; expert_no < config.num_expert; expert_no++) {
             if (expert_no >= expert_mask.pred_flag.size()) {
                 OPENVINO_THROW("expert_no=", expert_no, " is out of bounds");
@@ -1667,10 +1679,7 @@ public:
                 continue;
             }
             auto& dnnl_weights = _dnnl_weights[expert_no];
-
-            // expert_mask
             expert_mask_gpu& expert_mask_mem = scratch.expert_masks[expert_no];
-            copy_expert_mask_to_gpu(stream, expert_mask, expert_no, expert_mask_mem);
 
             auto n_token = static_cast<int>(expert_mask.batch[expert_no].size());
 
