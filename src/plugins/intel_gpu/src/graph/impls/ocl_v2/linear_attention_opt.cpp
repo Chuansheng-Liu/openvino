@@ -11,7 +11,7 @@ namespace ov::intel_gpu::ocl {
 namespace {
 
 constexpr size_t v_block_size = 4;
-constexpr size_t default_opt_chunk_size = 0;
+constexpr size_t default_opt_algo = 1;  // default to algebraic fold
 
 size_t get_subgroup_size(gpu_arch arch) {
     switch (arch) {
@@ -30,18 +30,18 @@ size_t get_subgroup_size(gpu_arch arch) {
     }
 }
 
-size_t get_opt_chunk_size() {
-    static const size_t chunk_size = [] {
-        const char* env = std::getenv("OV_GENAI_LA_OPT_CHUNK");
+size_t get_opt_algo() {
+    static const size_t algo = [] {
+        const char* env = std::getenv("OV_GENAI_LA_OPT_ALGO");
         if (env) {
             try {
                 size_t val = std::stoull(env);
-                if (val <= 32) return val;  // 0 = simple mode, 1-32 = chunk mode
+                if (val <= 2) return val;  // 0=simple, 1=fold, 2=fold+prefetch
             } catch (...) {}
         }
-        return default_opt_chunk_size;
+        return default_opt_algo;
     }();
-    return chunk_size;
+    return algo;
 }
 
 class LinearAttentionOptGenerator : public KernelGenerator {
@@ -68,7 +68,7 @@ protected:
         jit.make("IO_TYPE", io_type);
         jit.make("SCALE_FACTOR", scale_factor);
         jit.make("OUTPUT_STATE", output_state);
-        jit.make("OPT_CHUNK_SIZE", get_opt_chunk_size());
+        jit.make("OPT_ALGO", get_opt_algo());
 
         return jit;
     }
