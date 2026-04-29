@@ -1552,8 +1552,25 @@ public:
 
     using lru_cache_hash = LruCache<std::pair<int, int>, std::shared_ptr<onednn_kernel>, PairHash>;
     lru_cache_hash _kernels = lru_cache_hash(1024);
+    // Round n_token up to nearest bucket to reduce unique oneDNN JIT compilations.
+    // Without bucketing: ~50 unique n_token values × 3 types = ~150 JIT compilations.
+    // With bucketing to powers of 2: ~6 buckets × 3 types = ~18 JIT compilations.
+    // The oneDNN primitive is created with the bucketed M, but forward() uses actual n_token.
+    static int bucket_n_token(int n) {
+        if (n <= 0) return 1;
+        if (n <= 8) return 8;
+        if (n <= 16) return 16;
+        if (n <= 32) return 32;
+        if (n <= 64) return 64;
+        if (n <= 128) return 128;
+        if (n <= 256) return 256;
+        if (n <= 512) return 512;
+        return ((n + 63) / 64) * 64;  // round up to multiple of 64
+    }
+
     onednn_kernel& get_kernel(int n_token, int expert_no, typed_primitive_inst<moe_3gemm_fused_compressed>& instance) {
-        auto key = std::make_pair(n_token, expert_no);
+        int bucketed = bucket_n_token(n_token);
+        auto key = std::make_pair(bucketed, expert_no);
         if (_kernels.has(key)) {
             return *_kernels.get(key);
         }
@@ -1572,7 +1589,7 @@ public:
         kernel->gate = onednn_linear::create(dnn_stream.get_engine(),
                                              hidden_states_layout_dt,
                                              gate_weight_layout_dt,
-                                             n_token,
+                                             bucketed,
                                              dnnl_weights[0].ic,
                                              dnnl_weights[0].oc,
                                              dnnl_weights[0].ic_group_size,
@@ -1586,7 +1603,7 @@ public:
         kernel->up = onednn_linear::create(dnn_stream.get_engine(),
                                            hidden_states_layout_dt,
                                            up_weight_layout_dt,
-                                           n_token,
+                                           bucketed,
                                            dnnl_weights[1].ic,
                                            dnnl_weights[1].oc,
                                            dnnl_weights[1].ic_group_size,
@@ -1600,7 +1617,7 @@ public:
         kernel->down = onednn_linear::create(dnn_stream.get_engine(),
                                              hidden_states_layout_dt,
                                              down_weight_layout_dt,
-                                             n_token,
+                                             bucketed,
                                              dnnl_weights[2].ic,
                                              dnnl_weights[2].oc,
                                              dnnl_weights[2].ic_group_size,
@@ -1687,10 +1704,15 @@ public:
             if (n_token > std::numeric_limits<int64_t>::max() / max_topk)
                 OPENVINO_THROW("n_token * max_topk overflow detected, n_token=", n_token, " max_topk=", max_topk);
 
-            int64_t routing_weights_size = static_cast<int64_t>(n_token * max_topk);
+            // Bucket n_token to reduce oneDNN JIT compilations (~50 unique → ~6 buckets).
+            // Gather writes exactly n_token rows; extra rows (n_token..bucketed-1) contain
+            // stale data from previous experts — processed but ignored by scatter.
+            int bucketed = bucket_n_token(n_token);
+            int64_t bucketed64 = static_cast<int64_t>(bucketed);
+            int64_t routing_weights_size = static_cast<int64_t>(bucketed * max_topk);
             onednn_kernel& kernel = get_kernel(n_token, static_cast<int>(expert_no), instance);
 
-            // gather
+            // gather (uses actual n_token — only reads/writes valid token data)
             result_event = execute_stage({result_event},
                                          instance,
                                          *gather,
@@ -1700,26 +1722,26 @@ public:
                                          {1, lws_size},
                                          instance.needs_completion_event());
 
-            // up
+            // up (uses bucketed M to match JIT primitive)
             kernel.up.forward(dnn_stream,
-                              n_token,
-                              convert2dnnl(scratch.x, {static_cast<int64_t>(n_token), dnnl_weights[1].ic}, dnnl::memory::format_tag::ab),
-                              convert2dnnl(scratch.up, {static_cast<int64_t>(n_token), _intermediate_size}, dnnl::memory::format_tag::ab),
+                              bucketed,
+                              convert2dnnl(scratch.x, {bucketed64, dnnl_weights[1].ic}, dnnl::memory::format_tag::ab),
+                              convert2dnnl(scratch.up, {bucketed64, _intermediate_size}, dnnl::memory::format_tag::ab),
                               dnnl::memory());
 
-            // gate
+            // gate (uses bucketed M)
             kernel.gate.forward(dnn_stream,
-                                n_token,
-                                convert2dnnl(scratch.x, {static_cast<int64_t>(n_token), dnnl_weights[0].ic}, dnnl::memory::format_tag::ab),
-                                convert2dnnl(scratch.gate, {static_cast<int64_t>(n_token), _intermediate_size}, dnnl::memory::format_tag::ab),
-                                convert2dnnl(scratch.up, {static_cast<int64_t>(n_token), _intermediate_size}, dnnl::memory::format_tag::ab));
+                                bucketed,
+                                convert2dnnl(scratch.x, {bucketed64, dnnl_weights[0].ic}, dnnl::memory::format_tag::ab),
+                                convert2dnnl(scratch.gate, {bucketed64, _intermediate_size}, dnnl::memory::format_tag::ab),
+                                convert2dnnl(scratch.up, {bucketed64, _intermediate_size}, dnnl::memory::format_tag::ab));
 
-            // down
+            // down (uses bucketed M)
             kernel.down.forward(dnn_stream,
-                                n_token,
-                                convert2dnnl(scratch.gate, {static_cast<int64_t>(n_token), _intermediate_size}, dnnl::memory::format_tag::ab),
-                                convert2dnnl(scratch.y, {static_cast<int64_t>(n_token), _hidden_size}, dnnl::memory::format_tag::ab),
-                                convert2dnnl(scratch.routing_weights, {static_cast<int64_t>(routing_weights_size)}, dnnl::memory::format_tag::a));
+                                bucketed,
+                                convert2dnnl(scratch.gate, {bucketed64, _intermediate_size}, dnnl::memory::format_tag::ab),
+                                convert2dnnl(scratch.y, {bucketed64, _hidden_size}, dnnl::memory::format_tag::ab),
+                                convert2dnnl(scratch.routing_weights, {routing_weights_size}, dnnl::memory::format_tag::a));
 
             // index_add
             result_event = execute_stage({result_event},
